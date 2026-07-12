@@ -226,11 +226,20 @@ The directive describes a broad end-state. Deliberately deferred:
 ## Development
 
 ```bash
-cargo test --workspace    # 29 tests: manager semantics, hierarchy, recovery
+cargo test --workspace    # 32 tests: manager semantics, hierarchy, recovery
 cargo build --release
 ```
 
 Core tests cover the conflict matrix, hierarchical locking, queue promotion
 under every policy, lease/heartbeat expiry, steal/transfer/promote/downgrade,
-and SQLite crash recovery (leases and queues survive restart; stale leases
-expire and promote on recovery).
+the std HTTP client, and SQLite crash recovery (leases and queues survive
+restart; stale leases expire and promote on recovery).
+
+## Project governance
+
+- `STRATEGY.md` — enterprise development strategy, phases and KPIs.
+- `FRACAS.md` — failure-mode register (FRACAS) with corrective actions.
+- `.amber.toml` — dependency policy; the CLI deliberately avoids heavy
+  HTTP stacks (std-based client, 5 direct deps).
+- `deliver.toml` — acceptance gate (`deliver --strict`).
+- `kaptaind.toml` — change control; auto-commits are test-gated.
