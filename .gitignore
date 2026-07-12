@@ -5,3 +5,4 @@
 *.db.lock
 .kaptaind/
 amber_proposals/
+.amber/
