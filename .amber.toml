@@ -1,0 +1,23 @@
+# Amber dependency policy for Locksmith.
+# See STRATEGY.md section 3 for the rationale behind each decision.
+# Note: amber analyzes one package at a time; run it per crate:
+#   amber crates/locksmith-core --config .amber.toml
+#   amber crates/locksmithd    --config .amber.toml
+#   amber crates/locksmith-cli --config .amber.toml
+
+threshold = 60
+
+[policy]
+# Foundational crates that must never be flagged for removal.
+required = ["serde", "serde_json", "rusqlite", "tokio", "axum", "clap", "libc"]
+# Banned from the tree (removed after the v0.1.1 amber pass).
+forbidden = ["reqwest"]
+strict = false
+
+[weights]
+simplicity = 0.25
+transitive_value = 0.15
+security = 0.20
+maintenance = 0.15
+testability = 0.10
+api_surface = 0.15
