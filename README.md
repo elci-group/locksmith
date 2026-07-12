@@ -166,6 +166,11 @@ replays the store, expires leases whose lease time or heartbeat timeout
 elapsed while it was down, promotes queued owners, and resumes — recovery
 from a crash needs no manual intervention.
 
+The daemon takes an exclusive `flock` on `<db>.lock` at startup, so a
+second daemon can never share one database (split brain). The lock is
+released by the kernel when the process dies — a stale lock file never
+blocks a restart.
+
 ## Failure model
 
 ```
