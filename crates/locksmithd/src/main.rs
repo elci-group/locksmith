@@ -129,8 +129,9 @@ struct LimitQuery {
 fn parse_mode(s: Option<&str>) -> Result<LockMode, Error> {
     match s {
         None => Ok(LockMode::Exclusive),
-        Some(s) => LockMode::parse(s)
-            .ok_or_else(|| Error::Invalid(format!("unknown lock mode '{s}'"))),
+        Some(s) => {
+            LockMode::parse(s).ok_or_else(|| Error::Invalid(format!("unknown lock mode '{s}'")))
+        }
     }
 }
 
@@ -167,7 +168,9 @@ async fn acquire(
     identity: Identity,
     Json(body): Json<AcquireBody>,
 ) -> ApiResult {
-    identity.require(Capability::Acquire).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Acquire)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let owner = identity
         .resolve_owner(body.owner.as_deref())
         .map_err(|(s, j)| (s, j).into_response())?;
@@ -197,11 +200,16 @@ async fn release(
     identity: Identity,
     Json(body): Json<ResourceOwnerBody>,
 ) -> ApiResult {
-    identity.require(Capability::Release).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Release)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let owner = identity
         .resolve_owner(body.owner.as_deref())
         .map_err(|(s, j)| (s, j).into_response())?;
-    let promoted = state.manager.release(&body.resource, &owner).map_err(core_error)?;
+    let promoted = state
+        .manager
+        .release(&body.resource, &owner)
+        .map_err(core_error)?;
     ok(serde_json::json!({
         "released": true,
         "resource": body.resource,
@@ -215,11 +223,16 @@ async fn renew(
     identity: Identity,
     Json(body): Json<ResourceOwnerBody>,
 ) -> ApiResult {
-    identity.require(Capability::Acquire).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Acquire)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let owner = identity
         .resolve_owner(body.owner.as_deref())
         .map_err(|(s, j)| (s, j).into_response())?;
-    let lease = state.manager.renew(&body.resource, &owner).map_err(core_error)?;
+    let lease = state
+        .manager
+        .renew(&body.resource, &owner)
+        .map_err(core_error)?;
     ok(lease)
 }
 
@@ -228,7 +241,9 @@ async fn heartbeat(
     identity: Identity,
     Json(body): Json<HeartbeatBody>,
 ) -> ApiResult {
-    identity.require(Capability::Acquire).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Acquire)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let owner = identity
         .resolve_owner(body.owner.as_deref())
         .map_err(|(s, j)| (s, j).into_response())?;
@@ -244,7 +259,9 @@ async fn transfer(
     identity: Identity,
     Json(body): Json<TransferBody>,
 ) -> ApiResult {
-    identity.require(Capability::Transfer).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Transfer)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let from = identity
         .resolve_owner(body.from.as_deref())
         .map_err(|(s, j)| (s, j).into_response())?;
@@ -260,7 +277,9 @@ async fn steal(
     identity: Identity,
     Json(body): Json<StealBody>,
 ) -> ApiResult {
-    identity.require(Capability::Steal).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Steal)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let owner = identity
         .resolve_owner(body.owner.as_deref())
         .map_err(|(s, j)| (s, j).into_response())?;
@@ -276,7 +295,9 @@ async fn promote(
     identity: Identity,
     Json(body): Json<ModeBody>,
 ) -> ApiResult {
-    identity.require(Capability::Acquire).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Acquire)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let owner = identity
         .resolve_owner(body.owner.as_deref())
         .map_err(|(s, j)| (s, j).into_response())?;
@@ -284,7 +305,10 @@ async fn promote(
         Some(s) => Some(parse_mode(Some(s)).map_err(core_error)?),
         None => None,
     };
-    let lease = state.manager.promote(&body.resource, &owner, mode).map_err(core_error)?;
+    let lease = state
+        .manager
+        .promote(&body.resource, &owner, mode)
+        .map_err(core_error)?;
     ok(lease)
 }
 
@@ -293,7 +317,9 @@ async fn downgrade(
     identity: Identity,
     Json(body): Json<ModeBody>,
 ) -> ApiResult {
-    identity.require(Capability::Acquire).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Acquire)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let owner = identity
         .resolve_owner(body.owner.as_deref())
         .map_err(|(s, j)| (s, j).into_response())?;
@@ -313,7 +339,9 @@ async fn inspect(
     identity: Identity,
     Query(query): Query<ResourceQuery>,
 ) -> ApiResult {
-    identity.require(Capability::Inspect).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Inspect)
+        .map_err(|(s, j)| (s, j).into_response())?;
     ok(state.manager.inspect(&query.resource))
 }
 
@@ -322,12 +350,16 @@ async fn queue(
     identity: Identity,
     Query(query): Query<ResourceQuery>,
 ) -> ApiResult {
-    identity.require(Capability::Inspect).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Inspect)
+        .map_err(|(s, j)| (s, j).into_response())?;
     ok(state.manager.queue(&query.resource))
 }
 
 async fn leases(State(state): State<AppState>, identity: Identity) -> ApiResult {
-    identity.require(Capability::Inspect).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Inspect)
+        .map_err(|(s, j)| (s, j).into_response())?;
     ok(state.manager.leases())
 }
 
@@ -336,7 +368,9 @@ async fn events(
     identity: Identity,
     Query(query): Query<LimitQuery>,
 ) -> ApiResult {
-    identity.require(Capability::Inspect).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Inspect)
+        .map_err(|(s, j)| (s, j).into_response())?;
     ok(state.manager.events(query.limit.unwrap_or(100).min(10_000)))
 }
 
@@ -345,7 +379,9 @@ async fn audit(
     identity: Identity,
     Query(query): Query<LimitQuery>,
 ) -> ApiResult {
-    identity.require(Capability::Inspect).map_err(|(s, j)| (s, j).into_response())?;
+    identity
+        .require(Capability::Inspect)
+        .map_err(|(s, j)| (s, j).into_response())?;
     let records = state
         .manager
         .audit_tail(query.limit.unwrap_or(100).min(10_000))
@@ -415,7 +451,10 @@ async fn metrics(State(state): State<AppState>) -> Response {
     );
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
         text,
     )
         .into_response()

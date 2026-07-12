@@ -57,7 +57,11 @@ impl Store for InMemoryStore {
     }
 
     fn remove_queue_entry(&self, id: QueueEntryId) -> Result<()> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).queue.remove(&id);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .queue
+            .remove(&id);
         Ok(())
     }
 
@@ -70,7 +74,11 @@ impl Store for InMemoryStore {
     }
 
     fn append_audit(&self, record: &AuditRecord) -> Result<()> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).audit.push(record.clone());
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .audit
+            .push(record.clone());
         Ok(())
     }
 

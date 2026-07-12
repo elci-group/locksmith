@@ -17,7 +17,12 @@ use locksmith_core::{
 #[command(name = "locksmith", version, about)]
 struct Cli {
     /// Daemon base URL.
-    #[arg(long, env = "LOCKSMITH_SERVER", default_value = "http://127.0.0.1:7700", global = true)]
+    #[arg(
+        long,
+        env = "LOCKSMITH_SERVER",
+        default_value = "http://127.0.0.1:7700",
+        global = true
+    )]
     server: String,
 
     /// API key for authenticated daemons.
@@ -142,7 +147,10 @@ impl Ctx {
         result: Result<(u16, String), String>,
     ) -> Result<R, String> {
         let (status, text) = result.map_err(|e| {
-            format!("cannot reach daemon at {}: {e}\n  is locksmithd running?", self.server)
+            format!(
+                "cannot reach daemon at {}: {e}\n  is locksmithd running?",
+                self.server
+            )
         })?;
         if !(200..300).contains(&status) {
             let msg = serde_json::from_str::<serde_json::Value>(&text)
@@ -160,10 +168,7 @@ impl Ctx {
         body: &T,
     ) -> Result<R, String> {
         let text = serde_json::to_string(body).map_err(|e| e.to_string())?;
-        self.decode(
-            self.client
-                .post_json(path, &text, self.api_key.as_deref()),
-        )
+        self.decode(self.client.post_json(path, &text, self.api_key.as_deref()))
     }
 
     fn get<R: serde::de::DeserializeOwned>(
@@ -197,7 +202,11 @@ fn now_ms() -> u64 {
 fn fmt_relative(target_ms: u64) -> String {
     let now = now_ms() as i64;
     let delta = target_ms as i64 - now;
-    let (label, abs) = if delta >= 0 { ("in", delta) } else { ("", -delta) };
+    let (label, abs) = if delta >= 0 {
+        ("in", delta)
+    } else {
+        ("", -delta)
+    };
     let secs = abs / 1000;
     let body = if secs >= 3600 {
         format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
@@ -264,7 +273,9 @@ fn cmd_acquire(
         return Err(format!("unknown mode '{mode}' (exclusive|shared|intent)"));
     }
     if Priority::parse(priority).is_none() {
-        return Err(format!("unknown priority '{priority}' (low|normal|high|critical)"));
+        return Err(format!(
+            "unknown priority '{priority}' (low|normal|high|critical)"
+        ));
     }
     let lease_ms = match lease {
         Some(l) => Some(parse_duration_ms(l)?),
@@ -409,7 +420,10 @@ fn cmd_heartbeat(ctx: &Ctx, resources: &[String]) -> Result<(), String> {
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&resp).unwrap());
     } else {
-        println!("Heartbeat: {} lease(s) refreshed for {}", resp.leases_refreshed, ctx.owner);
+        println!(
+            "Heartbeat: {} lease(s) refreshed for {}",
+            resp.leases_refreshed, ctx.owner
+        );
     }
     Ok(())
 }

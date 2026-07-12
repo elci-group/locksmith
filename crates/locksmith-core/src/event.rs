@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::mpsc;
 
-use crate::types::{OwnerId, ResourceId, TimestampMs, now_ms};
+use crate::types::{now_ms, OwnerId, ResourceId, TimestampMs};
 
 /// The kind of state transition an event describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

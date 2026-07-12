@@ -7,13 +7,11 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::audit::AuditRecord;
 use crate::error::{Error, Result};
-use crate::types::{
-    Lease, LeaseCapability, LockMode, Priority, QueueEntry, QueueEntryId, now_ms,
-};
+use crate::types::{now_ms, Lease, LeaseCapability, LockMode, Priority, QueueEntry, QueueEntryId};
 
 use super::{Snapshot, Store};
 

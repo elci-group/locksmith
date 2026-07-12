@@ -54,7 +54,13 @@ mod tests {
     use super::*;
     use crate::types::{LockMode, OwnerId, Priority};
 
-    fn entry(seq: u64, owner: &str, priority: Priority, lease_ms: u64, requested_at: u64) -> QueueEntry {
+    fn entry(
+        seq: u64,
+        owner: &str,
+        priority: Priority,
+        lease_ms: u64,
+        requested_at: u64,
+    ) -> QueueEntry {
         QueueEntry {
             id: seq,
             seq,

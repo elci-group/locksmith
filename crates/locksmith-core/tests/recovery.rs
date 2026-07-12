@@ -3,9 +3,7 @@
 
 use std::path::PathBuf;
 
-use locksmith_core::{
-    AcquireOutcome, AcquireRequest, Config, LockManager, LockMode, SqliteStore,
-};
+use locksmith_core::{AcquireOutcome, AcquireRequest, Config, LockManager, LockMode, SqliteStore};
 
 fn temp_db(name: &str) -> PathBuf {
     let mut dir = std::env::temp_dir();
@@ -57,7 +55,11 @@ fn leases_survive_restart() {
         assert_eq!(view.queue[0].owner, "openclaw");
         // Ids must not be reused after restart.
         let out = m
-            .acquire(AcquireRequest::new("workspace/backend", "hermes", LockMode::Exclusive))
+            .acquire(AcquireRequest::new(
+                "workspace/backend",
+                "hermes",
+                LockMode::Exclusive,
+            ))
             .unwrap();
         let AcquireOutcome::Granted { lease } = out else {
             panic!("expected grant");

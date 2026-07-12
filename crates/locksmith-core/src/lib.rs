@@ -28,6 +28,6 @@ pub use manager::{
 pub use scheduler::QueuePolicy;
 pub use store::{InMemoryStore, Snapshot, SqliteStore, Store};
 pub use types::{
-    Config, Lease, LeaseCapability, LeaseId, LockMode, OwnerId, Priority, QueueEntry,
-    QueueEntryId, ResourceId, TimestampMs, now_ms,
+    now_ms, Config, Lease, LeaseCapability, LeaseId, LockMode, OwnerId, Priority, QueueEntry,
+    QueueEntryId, ResourceId, TimestampMs,
 };

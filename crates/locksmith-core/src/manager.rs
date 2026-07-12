@@ -8,9 +8,9 @@
 //! * published on the event bus.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +21,8 @@ use crate::hierarchy;
 use crate::scheduler::QueuePolicy;
 use crate::store::{Snapshot, Store};
 use crate::types::{
-    Config, Lease, LeaseCapability, LeaseId, LockMode, OwnerId, Priority, QueueEntry,
-    QueueEntryId, ResourceId, TimestampMs, now_ms,
+    now_ms, Config, Lease, LeaseCapability, LeaseId, LockMode, OwnerId, Priority, QueueEntry,
+    QueueEntryId, ResourceId, TimestampMs,
 };
 
 /// Strength ordering for promotion logic: Exclusive > Intent > Shared.
@@ -192,7 +192,10 @@ impl State {
     fn from_snapshot(snapshot: Snapshot) -> Self {
         let mut leases: HashMap<ResourceId, Vec<Lease>> = HashMap::new();
         for lease in snapshot.leases {
-            leases.entry(lease.resource.clone()).or_default().push(lease);
+            leases
+                .entry(lease.resource.clone())
+                .or_default()
+                .push(lease);
         }
         let mut queue: HashMap<ResourceId, Vec<QueueEntry>> = HashMap::new();
         for entry in snapshot.queue {
@@ -336,7 +339,10 @@ impl<S: Store> LockManager<S> {
                 return Ok(AcquireOutcome::Held { lease: existing });
             }
             // Stronger mode requested: in-place upgrade if uncontested.
-            if state.find_conflict(&resource, &req.owner, req.mode).is_none() {
+            if state
+                .find_conflict(&resource, &req.owner, req.mode)
+                .is_none()
+            {
                 let lease = self.upgrade_mode(&mut state, &resource, &req.owner, req.mode)?;
                 return Ok(AcquireOutcome::Granted { lease });
             }
@@ -371,7 +377,9 @@ impl<S: Store> LockManager<S> {
             mode: req.mode,
             priority: req.priority,
             requested_at: now,
-            lease_duration_ms: req.lease_duration_ms.unwrap_or(self.config.default_lease_ms),
+            lease_duration_ms: req
+                .lease_duration_ms
+                .unwrap_or(self.config.default_lease_ms),
             heartbeat_interval_ms: req
                 .heartbeat_interval_ms
                 .unwrap_or(self.config.default_heartbeat_interval_ms),
@@ -417,7 +425,9 @@ impl<S: Store> LockManager<S> {
         resource: &str,
         now: TimestampMs,
     ) -> Result<Lease> {
-        let duration = req.lease_duration_ms.unwrap_or(self.config.default_lease_ms);
+        let duration = req
+            .lease_duration_ms
+            .unwrap_or(self.config.default_lease_ms);
         let lease = Lease {
             id: self.alloc_lease_id(state)?,
             resource: resource.to_string(),
@@ -448,11 +458,10 @@ impl<S: Store> LockManager<S> {
             .push(lease.clone());
         self.metrics.grants.fetch_add(1, Ordering::Relaxed);
         self.store.append_audit(
-            &AuditRecord::new(&lease.owner, "acquire", resource)
-                .with_metadata(serde_json::json!({
-                    "mode": lease.mode.as_str(),
-                    "lease_ms": lease.lease_duration_ms,
-                })),
+            &AuditRecord::new(&lease.owner, "acquire", resource).with_metadata(serde_json::json!({
+                "mode": lease.mode.as_str(),
+                "lease_ms": lease.lease_duration_ms,
+            })),
         )?;
         self.bus.lock().unwrap_or_else(|e| e.into_inner()).emit(
             EventKind::LockAcquired,
@@ -476,11 +485,17 @@ impl<S: Store> LockManager<S> {
         let leases = state
             .leases
             .get_mut(resource)
-            .ok_or_else(|| Error::NotHeld { resource: resource.into(), owner: owner.into() })?;
+            .ok_or_else(|| Error::NotHeld {
+                resource: resource.into(),
+                owner: owner.into(),
+            })?;
         let lease = leases
             .iter_mut()
             .find(|l| l.owner == owner)
-            .ok_or_else(|| Error::NotHeld { resource: resource.into(), owner: owner.into() })?;
+            .ok_or_else(|| Error::NotHeld {
+                resource: resource.into(),
+                owner: owner.into(),
+            })?;
         lease.mode = mode;
         let lease = lease.clone();
         self.store.put_lease(&lease)?;
@@ -507,7 +522,10 @@ impl<S: Store> LockManager<S> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let removed = self.remove_lease_inner(&mut state, &resource, owner, "release")?;
         match removed {
-            None => Err(Error::NotHeld { resource, owner: owner.into() }),
+            None => Err(Error::NotHeld {
+                resource,
+                owner: owner.into(),
+            }),
             Some(_) => {
                 self.metrics.releases.fetch_add(1, Ordering::Relaxed);
                 let promoted = self.promote_related(&mut state, &resource)?;
@@ -537,9 +555,8 @@ impl<S: Store> LockManager<S> {
         }
         self.store.remove_lease(resource, owner)?;
         let held_ms = now_ms().saturating_sub(lease.acquired_at);
-        self.store.append_audit(
-            &AuditRecord::new(owner, action, resource).with_duration(held_ms),
-        )?;
+        self.store
+            .append_audit(&AuditRecord::new(owner, action, resource).with_duration(held_ms))?;
         self.bus.lock().unwrap_or_else(|e| e.into_inner()).emit(
             EventKind::LockReleased,
             resource,
@@ -611,7 +628,9 @@ impl<S: Store> LockManager<S> {
                     .with_metadata(serde_json::json!({ "leases": count })),
             )?;
         }
-        self.metrics.heartbeats.fetch_add(count as u64, Ordering::Relaxed);
+        self.metrics
+            .heartbeats
+            .fetch_add(count as u64, Ordering::Relaxed);
         Ok(count)
     }
 
@@ -625,11 +644,17 @@ impl<S: Store> LockManager<S> {
         let leases = state
             .leases
             .get_mut(resource)
-            .ok_or_else(|| Error::NotHeld { resource: resource.into(), owner: owner.into() })?;
+            .ok_or_else(|| Error::NotHeld {
+                resource: resource.into(),
+                owner: owner.into(),
+            })?;
         let lease = leases
             .iter_mut()
             .find(|l| l.owner == owner)
-            .ok_or_else(|| Error::NotHeld { resource: resource.into(), owner: owner.into() })?;
+            .ok_or_else(|| Error::NotHeld {
+                resource: resource.into(),
+                owner: owner.into(),
+            })?;
         f(lease);
         let lease = lease.clone();
         self.store.put_lease(&lease)?;
@@ -682,7 +707,12 @@ impl<S: Store> LockManager<S> {
         let victims: Vec<Lease> = state
             .leases
             .get(&resource)
-            .map(|ls| ls.iter().filter(|l| l.owner != new_owner).cloned().collect())
+            .map(|ls| {
+                ls.iter()
+                    .filter(|l| l.owner != new_owner)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         if victims.is_empty() {
             return Err(Error::NotFound(format!(
@@ -727,7 +757,10 @@ impl<S: Store> LockManager<S> {
             .get(&resource)
             .and_then(|ls| ls.iter().find(|l| l.owner == owner))
             .cloned()
-            .ok_or_else(|| Error::NotHeld { resource: resource.clone(), owner: owner.into() })?;
+            .ok_or_else(|| Error::NotHeld {
+                resource: resource.clone(),
+                owner: owner.into(),
+            })?;
         let target = mode.unwrap_or(LockMode::Exclusive);
         if strength(target) <= strength(current.mode) {
             return Err(Error::Invalid(format!(
@@ -745,7 +778,12 @@ impl<S: Store> LockManager<S> {
 
     /// Weaken a held lease (Exclusive -> Shared by default). May unblock
     /// queued waiters.
-    pub fn downgrade(&self, resource: &str, owner: &str, mode: Option<LockMode>) -> Result<Vec<Lease>> {
+    pub fn downgrade(
+        &self,
+        resource: &str,
+        owner: &str,
+        mode: Option<LockMode>,
+    ) -> Result<Vec<Lease>> {
         let resource = hierarchy::normalize(resource);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let target = mode.unwrap_or(LockMode::Shared);
@@ -754,7 +792,10 @@ impl<S: Store> LockManager<S> {
             .get(&resource)
             .and_then(|ls| ls.iter().find(|l| l.owner == owner))
             .cloned()
-            .ok_or_else(|| Error::NotHeld { resource: resource.clone(), owner: owner.into() })?;
+            .ok_or_else(|| Error::NotHeld {
+                resource: resource.clone(),
+                owner: owner.into(),
+            })?;
         if strength(target) >= strength(current.mode) {
             return Err(Error::Invalid(format!(
                 "cannot downgrade {} to {}",
@@ -823,7 +864,12 @@ impl<S: Store> LockManager<S> {
                 report.expired.push(lease);
                 affected.push(resource.clone());
             }
-            if state.leases.get(&resource).map(|l| l.is_empty()).unwrap_or(false) {
+            if state
+                .leases
+                .get(&resource)
+                .map(|l| l.is_empty())
+                .unwrap_or(false)
+            {
                 state.leases.remove(&resource);
             }
         }
@@ -878,7 +924,11 @@ impl<S: Store> LockManager<S> {
                 .collect();
             let mut granted_any = false;
             for id in order {
-                let entry = match state.queue.get(resource).and_then(|es| es.iter().find(|e| e.id == id)) {
+                let entry = match state
+                    .queue
+                    .get(resource)
+                    .and_then(|es| es.iter().find(|e| e.id == id))
+                {
                     Some(e) => e.clone(),
                     None => continue,
                 };
@@ -909,7 +959,9 @@ impl<S: Store> LockManager<S> {
                         .metadata(entry.metadata.clone());
                     self.grant(state, &req, resource, now)?
                 };
-                self.metrics.queue_promotions.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .queue_promotions
+                    .fetch_add(1, Ordering::Relaxed);
                 self.bus.lock().unwrap_or_else(|e| e.into_inner()).emit(
                     EventKind::QueueExited,
                     resource,
@@ -931,7 +983,11 @@ impl<S: Store> LockManager<S> {
             return 0;
         };
         let ordered = self.config.queue_policy.ordered(entries);
-        ordered.iter().position(|e| e.id == id).map(|p| p + 1).unwrap_or(0)
+        ordered
+            .iter()
+            .position(|e| e.id == id)
+            .map(|p| p + 1)
+            .unwrap_or(0)
     }
 
     // ------------------------------------------------------------------
@@ -991,11 +1047,17 @@ impl<S: Store> LockManager<S> {
     // ------------------------------------------------------------------
 
     pub fn subscribe(&self) -> mpsc::Receiver<Event> {
-        self.bus.lock().unwrap_or_else(|e| e.into_inner()).subscribe()
+        self.bus
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .subscribe()
     }
 
     pub fn events(&self, limit: usize) -> Vec<Event> {
-        self.bus.lock().unwrap_or_else(|e| e.into_inner()).tail(limit)
+        self.bus
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tail(limit)
     }
 
     pub fn audit_tail(&self, limit: usize) -> Result<Vec<AuditRecord>> {
@@ -1064,8 +1126,14 @@ mod tests {
         LockManager::new(InMemoryStore::new(), Config::default()).unwrap()
     }
 
-    fn acquire(m: &LockManager<InMemoryStore>, resource: &str, owner: &str, mode: LockMode) -> AcquireOutcome {
-        m.acquire(AcquireRequest::new(resource, owner, mode)).unwrap()
+    fn acquire(
+        m: &LockManager<InMemoryStore>,
+        resource: &str,
+        owner: &str,
+        mode: LockMode,
+    ) -> AcquireOutcome {
+        m.acquire(AcquireRequest::new(resource, owner, mode))
+            .unwrap()
     }
 
     #[test]
@@ -1191,7 +1259,10 @@ mod tests {
     fn lease_expiry_promotes_queue() {
         let m = LockManager::new(
             InMemoryStore::new(),
-            Config { default_lease_ms: 0, ..Config::default() },
+            Config {
+                default_lease_ms: 0,
+                ..Config::default()
+            },
         )
         .unwrap();
         acquire(&m, "r", "a", LockMode::Exclusive);
@@ -1264,7 +1335,9 @@ mod tests {
     fn steal_revokes_victim() {
         let m = manager();
         acquire(&m, "deploy:prod", "stuck-agent", LockMode::Exclusive);
-        let lease = m.steal("deploy:prod", "admin", "agent unresponsive").unwrap();
+        let lease = m
+            .steal("deploy:prod", "admin", "agent unresponsive")
+            .unwrap();
         assert_eq!(lease.owner, "admin");
         assert_eq!(lease.mode, LockMode::Exclusive);
         assert!(m.release("deploy:prod", "stuck-agent").is_err());
@@ -1297,7 +1370,10 @@ mod tests {
     fn priority_queue_ordering() {
         let m = LockManager::new(
             InMemoryStore::new(),
-            Config { queue_policy: QueuePolicy::Priority, ..Config::default() },
+            Config {
+                queue_policy: QueuePolicy::Priority,
+                ..Config::default()
+            },
         )
         .unwrap();
         acquire(&m, "r", "holder", LockMode::Exclusive);

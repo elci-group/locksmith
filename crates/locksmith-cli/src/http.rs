@@ -55,17 +55,15 @@ fn dechunk(body: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 impl Client {
     /// `base` is like `http://127.0.0.1:7700`.
     pub fn new(base: &str, timeout: Duration) -> Result<Self, String> {
-        let addr = base
-            .strip_prefix("http://")
-            .ok_or_else(|| "only http:// endpoints are supported (daemon is loopback HTTP)".to_string())?;
+        let addr = base.strip_prefix("http://").ok_or_else(|| {
+            "only http:// endpoints are supported (daemon is loopback HTTP)".to_string()
+        })?;
         let (host, port) = match addr.split_once(':') {
             Some((h, p)) => (
                 h.to_string(),
@@ -74,10 +72,19 @@ impl Client {
             ),
             None => (addr.to_string(), 80),
         };
-        Ok(Client { host, port, timeout })
+        Ok(Client {
+            host,
+            port,
+            timeout,
+        })
     }
 
-    pub fn get(&self, path: &str, query: &[(&str, &str)], bearer: Option<&str>) -> Result<(u16, String), String> {
+    pub fn get(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        bearer: Option<&str>,
+    ) -> Result<(u16, String), String> {
         let mut target = path.to_string();
         if !query.is_empty() {
             let qs: Vec<String> = query
@@ -90,7 +97,12 @@ impl Client {
         self.request("GET", &target, None, bearer)
     }
 
-    pub fn post_json(&self, path: &str, body: &str, bearer: Option<&str>) -> Result<(u16, String), String> {
+    pub fn post_json(
+        &self,
+        path: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<(u16, String), String> {
         self.request("POST", path, Some(body), bearer)
     }
 
