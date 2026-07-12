@@ -1,0 +1,7 @@
+/target
+*.db
+*.db-wal
+*.db-shm
+*.db.lock
+.kaptaind/
+amber_proposals/

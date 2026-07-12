@@ -1,0 +1,45 @@
+[[file]]
+path = "crates/locksmith-core/src/lib.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "crates/locksmith-core/src/manager.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+require_regex = ["pub fn acquire", "pub fn release", "pub fn sweep", "fn promote_queue"]
+
+[[file]]
+path = "crates/locksmith-core/src/store/sqlite.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+require_regex = ["CREATE TABLE IF NOT EXISTS leases", "CREATE TABLE IF NOT EXISTS queue", "CREATE TABLE IF NOT EXISTS audit"]
+
+[[file]]
+path = "crates/locksmithd/src/main.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+require_regex = ["/v1/acquire", "/v1/release", "/metrics"]
+
+[[file]]
+path = "crates/locksmith-cli/src/main.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "README.md"
+required = true
+require_regex = ["Quick start", "REST API", "crash recovery"]
+
+[[command]]
+name = "cargo test"
+cmd = ["cargo", "test", "--workspace"]
+expect_exit = 0
+timeout_secs = 300
+stdout_contains = ["test result: ok"]
+
+[[command]]
+name = "cargo build release"
+cmd = ["cargo", "build", "--release", "--workspace"]
+expect_exit = 0
+timeout_secs = 300

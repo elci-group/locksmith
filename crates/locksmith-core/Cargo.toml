@@ -1,0 +1,11 @@
+[package]
+name = "locksmith-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core lease manager, queue scheduler, heartbeat engine and persistence for Locksmith"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
