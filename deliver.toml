@@ -43,3 +43,18 @@ name = "cargo build release"
 cmd = ["cargo", "build", "--release", "--workspace"]
 expect_exit = 0
 timeout_secs = 300
+
+[[file]]
+path = "STRATEGY.md"
+required = true
+require_regex = ["Phase 2", "KPIs"]
+
+[[file]]
+path = "FRACAS.md"
+required = true
+require_regex = ["FM-01", "Corrective action"]
+
+[[file]]
+path = "crates/locksmith-cli/src/http.rs"
+required = true
+require_regex = ["pub fn post_json", "fn dechunk"]
