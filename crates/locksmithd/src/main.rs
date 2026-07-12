@@ -485,6 +485,7 @@ impl DaemonLock {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false) // truncated via set_len only after the flock is held
             .open(&lock_path)
             .map_err(|e| format!("cannot open lock file {}: {e}", lock_path.display()))?;
         let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
