@@ -1,7 +1,7 @@
 //! Core types shared across Locksmith: resources, leases, queues, config.
 
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::scheduler::QueuePolicy;
 
