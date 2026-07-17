@@ -7,10 +7,11 @@
 //! * appended to the audit log,
 //! * published on the event bus.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,28 @@ fn infer_kind(id: &str) -> &str {
     }
 }
 
+/// Minimum interval between audit retention passes (the sweeper runs every
+/// second; pruning hourly is plenty and keeps the DELETE off the hot path).
+const AUDIT_PRUNE_INTERVAL_MS: u64 = 60 * 60 * 1000;
+
+/// Append audit records to a JSONL archive file (FM-07 export-before-prune).
+fn append_jsonl(path: &std::path::Path, records: &[AuditRecord]) -> Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    for record in records {
+        writeln!(file, "{}", serde_json::to_string(record)?)?;
+    }
+    Ok(())
+}
+
 /// Request to acquire a lease.
 #[derive(Clone, Debug)]
 pub struct AcquireRequest {
@@ -80,6 +103,8 @@ pub struct AcquireRequest {
     pub heartbeat_timeout_ms: Option<u64>,
     pub capabilities: Vec<LeaseCapability>,
     pub metadata: serde_json::Value,
+    pub if_epoch: Option<u64>,
+    pub if_not_held_by: Option<OwnerId>,
 }
 
 impl AcquireRequest {
@@ -94,7 +119,19 @@ impl AcquireRequest {
             heartbeat_timeout_ms: None,
             capabilities: Vec::new(),
             metadata: serde_json::json!({}),
+            if_epoch: None,
+            if_not_held_by: None,
         }
+    }
+
+    pub fn if_epoch(mut self, epoch: u64) -> Self {
+        self.if_epoch = Some(epoch);
+        self
+    }
+
+    pub fn if_not_held_by(mut self, owner: impl Into<OwnerId>) -> Self {
+        self.if_not_held_by = Some(owner.into());
+        self
     }
 
     pub fn priority(mut self, priority: Priority) -> Self {
@@ -129,6 +166,7 @@ pub enum AcquireOutcome {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResourceView {
     pub resource: ResourceId,
+    pub epoch: u64,
     pub leases: Vec<Lease>,
     pub queue: Vec<QueueEntry>,
     pub ancestor_locks: Vec<Lease>,
@@ -158,6 +196,7 @@ struct Metrics {
     downgrades: AtomicU64,
     conflicts: AtomicU64,
     queue_promotions: AtomicU64,
+    audit_pruned: AtomicU64,
 }
 
 /// Point-in-time metrics snapshot (counters + gauges).
@@ -176,6 +215,7 @@ pub struct MetricsSnapshot {
     pub downgrades: u64,
     pub conflicts: u64,
     pub queue_promotions: u64,
+    pub audit_pruned: u64,
     pub active_leases: u64,
     pub queue_depth: u64,
 }
@@ -186,16 +226,28 @@ struct State {
     next_lease_id: LeaseId,
     next_queue_id: QueueEntryId,
     next_seq: u64,
+    epochs: HashMap<ResourceId, u64>,
+    // prefix -> set of resource ids that have this prefix (descendants)
+    prefix_index: HashMap<String, HashSet<ResourceId>>,
 }
 
 impl State {
     fn from_snapshot(snapshot: Snapshot) -> Self {
+        let now = now_ms();
         let mut leases: HashMap<ResourceId, Vec<Lease>> = HashMap::new();
-        for lease in snapshot.leases {
-            leases
-                .entry(lease.resource.clone())
-                .or_default()
-                .push(lease);
+        let mut prefix_index: HashMap<String, HashSet<ResourceId>> = HashMap::new();
+        for mut lease in snapshot.leases {
+            // Monotonic anchors are process-local: rebuild them from the
+            // persisted wall-clock fields (FM-03).
+            lease.reanchor(now);
+            let res = lease.resource.clone();
+            leases.entry(res.clone()).or_default().push(lease);
+            // build prefix index for hierarchical resources
+            if res.contains('/') {
+                for prefix in hierarchy::ancestors(&res) {
+                    prefix_index.entry(prefix).or_default().insert(res.clone());
+                }
+            }
         }
         let mut queue: HashMap<ResourceId, Vec<QueueEntry>> = HashMap::new();
         for entry in snapshot.queue {
@@ -207,6 +259,8 @@ impl State {
             next_lease_id: snapshot.next_lease_id.max(1),
             next_queue_id: snapshot.next_queue_id.max(1),
             next_seq: snapshot.next_seq.max(1),
+            epochs: snapshot.epochs.into_iter().collect(),
+            prefix_index,
         }
     }
 
@@ -216,6 +270,40 @@ impl State {
 
     fn total_queued(&self) -> u64 {
         self.queue.values().map(|v| v.len() as u64).sum()
+    }
+
+    fn epoch(&self, resource: &str) -> u64 {
+        self.epochs.get(resource).copied().unwrap_or(0)
+    }
+
+    fn bump_epoch(&mut self, resource: &str) -> u64 {
+        let next = self.epochs.get(resource).copied().unwrap_or(0) + 1;
+        self.epochs.insert(resource.to_string(), next);
+        next
+    }
+
+    fn add_prefix_index(&mut self, resource: &str) {
+        if resource.contains('/') {
+            for prefix in hierarchy::ancestors(resource) {
+                self.prefix_index
+                    .entry(prefix)
+                    .or_default()
+                    .insert(resource.to_string());
+            }
+        }
+    }
+
+    fn remove_prefix_index(&mut self, resource: &str) {
+        if resource.contains('/') {
+            for prefix in hierarchy::ancestors(resource) {
+                if let Some(set) = self.prefix_index.get_mut(&prefix) {
+                    set.remove(resource);
+                    if set.is_empty() {
+                        self.prefix_index.remove(&prefix);
+                    }
+                }
+            }
+        }
     }
 
     /// Find a conflicting lock for `owner` requesting `mode` on `resource`.
@@ -249,19 +337,20 @@ impl State {
                 }
             }
         }
-        // Descendants.
-        for (res, leases) in &self.leases {
-            if !hierarchy::is_ancestor(resource, res) {
-                continue;
-            }
-            for lease in leases {
-                if lease.owner != owner && descendant_blocks(mode, lease.mode) {
-                    return Some(format!(
-                        "'{}' holds {} on descendant '{}'",
-                        lease.owner,
-                        lease.mode.as_str(),
-                        res
-                    ));
+        // Descendants via prefix index.
+        if let Some(descendants) = self.prefix_index.get(resource) {
+            for res in descendants {
+                if let Some(leases) = self.leases.get(res) {
+                    for lease in leases {
+                        if lease.owner != owner && descendant_blocks(mode, lease.mode) {
+                            return Some(format!(
+                                "'{}' holds {} on descendant '{}'",
+                                lease.owner,
+                                lease.mode.as_str(),
+                                res
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -282,6 +371,8 @@ pub struct LockManager<S: Store> {
     bus: Mutex<EventBus>,
     config: Config,
     metrics: Metrics,
+    /// Wall-clock time of the last audit retention pass (prune is throttled).
+    last_audit_prune: AtomicU64,
 }
 
 impl<S: Store> LockManager<S> {
@@ -296,6 +387,7 @@ impl<S: Store> LockManager<S> {
             bus: Mutex::new(EventBus::new(config.event_buffer)),
             config,
             metrics: Metrics::default(),
+            last_audit_prune: AtomicU64::new(0),
         };
         let report = manager.sweep()?;
         manager.bus.lock().unwrap_or_else(|e| e.into_inner()).emit(
@@ -327,6 +419,29 @@ impl<S: Store> LockManager<S> {
         }
         let now = now_ms();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+
+        let epoch = state.epoch(&resource);
+
+        // Conditional checks (fencing tokens).
+        if let Some(expected) = req.if_epoch {
+            if expected != epoch {
+                return Err(Error::EpochMismatch {
+                    resource,
+                    expected,
+                    actual: epoch,
+                });
+            }
+        }
+        if let Some(ref blocked_owner) = req.if_not_held_by {
+            if let Some(leases) = state.leases.get(&resource) {
+                if leases.iter().any(|l| l.owner == *blocked_owner) {
+                    return Err(Error::HeldByOther {
+                        resource,
+                        owner: blocked_owner.clone(),
+                    });
+                }
+            }
+        }
 
         // Recursive ownership: owner already holds this resource.
         if let Some(existing) = state
@@ -428,6 +543,7 @@ impl<S: Store> LockManager<S> {
         let duration = req
             .lease_duration_ms
             .unwrap_or(self.config.default_lease_ms);
+        let epoch = self.bump_epoch(state, resource)?;
         let lease = Lease {
             id: self.alloc_lease_id(state)?,
             resource: resource.to_string(),
@@ -444,6 +560,9 @@ impl<S: Store> LockManager<S> {
             heartbeat_timeout_ms: req
                 .heartbeat_timeout_ms
                 .unwrap_or(self.config.default_heartbeat_timeout_ms),
+            epoch,
+            deadline: Instant::now() + std::time::Duration::from_millis(duration),
+            last_beat: Instant::now(),
             capabilities: req.capabilities.clone(),
             metadata: req.metadata.clone(),
         };
@@ -456,11 +575,13 @@ impl<S: Store> LockManager<S> {
             .entry(resource.to_string())
             .or_default()
             .push(lease.clone());
+        state.add_prefix_index(resource);
         self.metrics.grants.fetch_add(1, Ordering::Relaxed);
         self.store.append_audit(
             &AuditRecord::new(&lease.owner, "acquire", resource).with_metadata(serde_json::json!({
                 "mode": lease.mode.as_str(),
                 "lease_ms": lease.lease_duration_ms,
+                "epoch": lease.epoch,
             })),
         )?;
         self.bus.lock().unwrap_or_else(|e| e.into_inner()).emit(
@@ -470,6 +591,7 @@ impl<S: Store> LockManager<S> {
             serde_json::json!({
                 "mode": lease.mode.as_str(),
                 "expires_at": lease.expires_at,
+                "epoch": lease.epoch,
             }),
         );
         Ok(lease)
@@ -482,6 +604,10 @@ impl<S: Store> LockManager<S> {
         owner: &str,
         mode: LockMode,
     ) -> Result<Lease> {
+        // Bump before borrowing: holding `state.leases` mutably below rules
+        // out touching `state` again. Callers have already verified the
+        // lease exists, so the bumped epoch is never wasted in practice.
+        let epoch = self.bump_epoch(state, resource)?;
         let leases = state
             .leases
             .get_mut(resource)
@@ -497,18 +623,19 @@ impl<S: Store> LockManager<S> {
                 owner: owner.into(),
             })?;
         lease.mode = mode;
+        lease.epoch = epoch;
         let lease = lease.clone();
         self.store.put_lease(&lease)?;
         self.metrics.promotions.fetch_add(1, Ordering::Relaxed);
-        self.store.append_audit(
-            &AuditRecord::new(owner, "promote", resource)
-                .with_metadata(serde_json::json!({ "mode": mode.as_str() })),
-        )?;
+        self.store
+            .append_audit(&AuditRecord::new(owner, "promote", resource).with_metadata(
+                serde_json::json!({ "mode": mode.as_str(), "epoch": lease.epoch }),
+            ))?;
         self.bus.lock().unwrap_or_else(|e| e.into_inner()).emit(
             EventKind::LockPromoted,
             resource,
             owner,
-            serde_json::json!({ "mode": mode.as_str() }),
+            serde_json::json!({ "mode": mode.as_str(), "epoch": lease.epoch }),
         );
         Ok(lease)
     }
@@ -552,6 +679,7 @@ impl<S: Store> LockManager<S> {
         let lease = leases.remove(pos);
         if leases.is_empty() {
             state.leases.remove(resource);
+            state.remove_prefix_index(resource);
         }
         self.store.remove_lease(resource, owner)?;
         let held_ms = now_ms().saturating_sub(lease.acquired_at);
@@ -577,6 +705,9 @@ impl<S: Store> LockManager<S> {
         let lease = self.mutate_lease(&mut state, &resource, owner, |lease| {
             lease.expires_at = now + lease.lease_duration_ms;
             lease.last_heartbeat = now;
+            lease.deadline =
+                Instant::now() + std::time::Duration::from_millis(lease.lease_duration_ms);
+            lease.last_beat = Instant::now();
         })?;
         self.metrics.renewals.fetch_add(1, Ordering::Relaxed);
         self.store.append_audit(
@@ -611,6 +742,7 @@ impl<S: Store> LockManager<S> {
                     continue;
                 }
                 lease.last_heartbeat = now;
+                lease.last_beat = Instant::now();
                 let updated = lease.clone();
                 self.store.put_lease(&updated)?;
                 count += 1;
@@ -679,10 +811,30 @@ impl<S: Store> LockManager<S> {
                 "'{to}' already holds a lease on '{resource}'"
             )));
         }
+        // Verify the holder before bumping the epoch so a failed transfer
+        // never consumes one (the closure below cannot touch `state`).
+        let held = state
+            .leases
+            .get(&resource)
+            .map(|ls| ls.iter().any(|l| l.owner == from))
+            .unwrap_or(false);
+        if !held {
+            return Err(Error::NotHeld {
+                resource,
+                owner: from.into(),
+            });
+        }
+        let epoch = self.bump_epoch(&mut state, &resource)?;
         let lease = self.mutate_lease(&mut state, &resource, from, |lease| {
             lease.owner = to.to_string();
             lease.last_heartbeat = now_ms();
+            lease.last_beat = Instant::now();
+            lease.epoch = epoch;
         })?;
+        // mutate_lease wrote the lease under the new owner; remove the old
+        // (resource, from) row or a restart would resurrect it as a second,
+        // stale lease.
+        self.store.remove_lease(&resource, from)?;
         self.store.put_owner(to, &serde_json::json!({}))?;
         self.metrics.transfers.fetch_add(1, Ordering::Relaxed);
         self.store.append_audit(
@@ -823,7 +975,8 @@ impl<S: Store> LockManager<S> {
     // ------------------------------------------------------------------
 
     /// Expire leases whose lease time or heartbeat timeout has elapsed,
-    /// then advance affected queues.
+    /// then advance affected queues. Also runs the (throttled) audit
+    /// retention pass.
     pub fn sweep(&self) -> Result<SweepReport> {
         let now = now_ms();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -838,7 +991,7 @@ impl<S: Store> LockManager<S> {
             let mut i = 0;
             while i < leases.len() {
                 let lease = &leases[i];
-                let (dead, missed) = (lease.is_expired(now), lease.heartbeat_missed(now));
+                let (dead, missed) = (lease.is_expired(), lease.heartbeat_missed());
                 if !dead && !missed {
                     i += 1;
                     continue;
@@ -864,13 +1017,18 @@ impl<S: Store> LockManager<S> {
                 report.expired.push(lease);
                 affected.push(resource.clone());
             }
+        }
+
+        // Drop resources whose last lease expired.
+        for resource in &affected {
             if state
                 .leases
-                .get(&resource)
+                .get(resource)
                 .map(|l| l.is_empty())
                 .unwrap_or(false)
             {
-                state.leases.remove(&resource);
+                state.leases.remove(resource);
+                state.remove_prefix_index(resource);
             }
         }
 
@@ -878,7 +1036,43 @@ impl<S: Store> LockManager<S> {
             let promoted = self.promote_related(&mut state, &resource)?;
             report.promoted.extend(promoted);
         }
+
+        self.prune_audit(now)?;
+
         Ok(report)
+    }
+
+    /// Audit retention, throttled to one pass per interval: records older
+    /// than the retention window are exported to the JSONL archive (when
+    /// configured) and then pruned. An export failure aborts the prune —
+    /// records are never silently dropped (FM-07).
+    fn prune_audit(&self, now: TimestampMs) -> Result<()> {
+        if self.config.audit_retention_days == 0 {
+            return Ok(());
+        }
+        let last = self.last_audit_prune.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < AUDIT_PRUNE_INTERVAL_MS {
+            return Ok(());
+        }
+        self.last_audit_prune.store(now, Ordering::Relaxed);
+        let cutoff = now.saturating_sub(self.config.audit_retention_days * 86_400_000);
+        if let Some(path) = &self.config.audit_archive_path {
+            let old = self.store.audit_older_than(cutoff)?;
+            if !old.is_empty() {
+                append_jsonl(path, &old)?;
+            }
+        }
+        let pruned = self.store.prune_audit_older_than(cutoff)?;
+        if pruned > 0 {
+            self.metrics
+                .audit_pruned
+                .fetch_add(pruned, Ordering::Relaxed);
+            self.store.append_audit(
+                &AuditRecord::new("locksmith", "audit_prune", "*")
+                    .with_metadata(serde_json::json!({ "pruned": pruned })),
+            )?;
+        }
+        Ok(())
     }
 
     /// Promote queued waiters on `resource` and all related resources
@@ -1017,13 +1211,16 @@ impl<S: Store> LockManager<S> {
             }
         }
         let mut descendant_locks = Vec::new();
-        for (res, ls) in &state.leases {
-            if hierarchy::is_ancestor(&resource, res) {
-                descendant_locks.extend(ls.iter().cloned());
+        if let Some(descendants) = state.prefix_index.get(&resource) {
+            for res in descendants {
+                if let Some(ls) = state.leases.get(res) {
+                    descendant_locks.extend(ls.iter().cloned());
+                }
             }
         }
         ResourceView {
-            resource,
+            resource: resource.clone(),
+            epoch: state.epoch(&resource),
             leases,
             queue,
             ancestor_locks,
@@ -1082,6 +1279,7 @@ impl<S: Store> LockManager<S> {
             downgrades: get(&m.downgrades),
             conflicts: get(&m.conflicts),
             queue_promotions: get(&m.queue_promotions),
+            audit_pruned: get(&m.audit_pruned),
             active_leases: state.total_leases(),
             queue_depth: state.total_queued(),
         }
@@ -1089,6 +1287,19 @@ impl<S: Store> LockManager<S> {
 
     pub fn queue_policy(&self) -> QueuePolicy {
         self.config.queue_policy
+    }
+
+    // ------------------------------------------------------------------
+    // Fencing epochs (persisted per resource)
+    // ------------------------------------------------------------------
+
+    /// Bump and persist the fencing epoch of a resource. Epochs survive
+    /// restarts (stored as `epoch:<resource>` counters), so a stale holder
+    /// can never present a token that gets reissued after a crash.
+    fn bump_epoch(&self, state: &mut State, resource: &str) -> Result<u64> {
+        let next = state.bump_epoch(resource);
+        self.store.set_counter(&format!("epoch:{resource}"), next)?;
+        Ok(next)
     }
 
     // ------------------------------------------------------------------
@@ -1409,5 +1620,103 @@ mod tests {
         assert_eq!(view.queue.len(), 2);
         assert_eq!(view.ancestor_locks.len(), 1);
         assert_eq!(view.ancestor_locks[0].owner, "a");
+    }
+
+    #[test]
+    fn conditional_acquire_checks_epoch() {
+        let m = manager();
+        let out = m
+            .acquire(AcquireRequest::new("r", "a", LockMode::Exclusive).if_epoch(0))
+            .unwrap();
+        assert!(matches!(out, AcquireOutcome::Granted { .. }));
+        // The grant bumped the epoch to 1; a stale expectation fails.
+        let err = m
+            .acquire(AcquireRequest::new("r", "b", LockMode::Shared).if_epoch(0))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::EpochMismatch {
+                expected: 0,
+                actual: 1,
+                ..
+            }
+        ));
+        // The current epoch passes the check (then queues behind 'a').
+        let out = m
+            .acquire(AcquireRequest::new("r", "b", LockMode::Shared).if_epoch(1))
+            .unwrap();
+        assert!(matches!(out, AcquireOutcome::Queued { .. }));
+    }
+
+    #[test]
+    fn conditional_acquire_checks_holder() {
+        let m = manager();
+        acquire(&m, "r", "a", LockMode::Exclusive);
+        let err = m
+            .acquire(AcquireRequest::new("r", "b", LockMode::Exclusive).if_not_held_by("a"))
+            .unwrap_err();
+        assert!(matches!(err, Error::HeldByOther { .. }));
+        // Guard passes when the named owner does not hold the resource.
+        let out = m
+            .acquire(AcquireRequest::new("r", "a", LockMode::Exclusive).if_not_held_by("b"))
+            .unwrap();
+        assert!(matches!(out, AcquireOutcome::Held { .. }));
+    }
+
+    #[test]
+    fn epoch_bumps_on_changes_and_never_resets() {
+        let m = manager();
+        acquire(&m, "r", "a", LockMode::Shared);
+        assert_eq!(m.inspect("r").epoch, 1);
+        m.promote("r", "a", None).unwrap();
+        assert_eq!(m.inspect("r").epoch, 2);
+        m.transfer("r", "a", "b").unwrap();
+        assert_eq!(m.inspect("r").epoch, 3);
+        // Failed transfers do not consume epochs.
+        assert!(m.transfer("r", "ghost", "c").is_err());
+        assert_eq!(m.inspect("r").epoch, 3);
+        m.release("r", "b").unwrap();
+        assert_eq!(m.inspect("r").epoch, 3, "release keeps the epoch");
+        acquire(&m, "r", "c", LockMode::Exclusive);
+        assert_eq!(m.inspect("r").epoch, 4);
+    }
+
+    #[test]
+    fn audit_retention_exports_then_prunes() {
+        let archive = std::env::temp_dir().join(format!(
+            "locksmith-test-audit-{}-{}.jsonl",
+            std::process::id(),
+            now_ms()
+        ));
+        let store = InMemoryStore::new();
+        store
+            .append_audit(&AuditRecord {
+                ts: 1_000, // ancient: one second after the Unix epoch
+                owner: "old".to_string(),
+                action: "acquire".to_string(),
+                resource: "x".to_string(),
+                duration_ms: None,
+                metadata: serde_json::json!({}),
+            })
+            .unwrap();
+        let m = LockManager::new(
+            store,
+            Config {
+                audit_retention_days: 30,
+                audit_archive_path: Some(archive.clone()),
+                ..Config::default()
+            },
+        )
+        .unwrap();
+        // The startup sweep ran the retention pass: the old record was
+        // exported to the JSONL archive and then pruned from the store.
+        let archived = std::fs::read_to_string(&archive).unwrap();
+        assert!(
+            archived.contains("\"owner\":\"old\""),
+            "archive: {archived}"
+        );
+        assert!(m.audit_tail(50).unwrap().iter().all(|r| r.owner != "old"));
+        assert_eq!(m.metrics().audit_pruned, 1);
+        let _ = std::fs::remove_file(&archive);
     }
 }

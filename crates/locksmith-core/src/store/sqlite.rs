@@ -77,6 +77,7 @@ impl SqliteStore {
                  last_heartbeat        INTEGER NOT NULL,
                  heartbeat_interval_ms INTEGER NOT NULL,
                  heartbeat_timeout_ms  INTEGER NOT NULL,
+                 epoch                 INTEGER NOT NULL DEFAULT 0,
                  capabilities          TEXT NOT NULL,
                  metadata              TEXT NOT NULL,
                  PRIMARY KEY (resource, owner)
@@ -136,6 +137,18 @@ impl SqliteStore {
                  value INTEGER NOT NULL
              );",
         )?;
+        // Migration: databases created before fencing tokens lack the
+        // per-lease epoch column.
+        let has_epoch = {
+            let mut stmt = conn.prepare("PRAGMA table_info(leases)")?;
+            let names = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            names.iter().any(|n| n == "epoch")
+        };
+        if !has_epoch {
+            conn.execute_batch("ALTER TABLE leases ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0")?;
+        }
         Ok(SqliteStore {
             conn: Mutex::new(conn),
         })
@@ -157,6 +170,11 @@ impl SqliteStore {
             last_heartbeat: row.get("last_heartbeat")?,
             heartbeat_interval_ms: row.get("heartbeat_interval_ms")?,
             heartbeat_timeout_ms: row.get("heartbeat_timeout_ms")?,
+            epoch: row.get::<_, i64>("epoch")? as u64,
+            // Monotonic anchors are re-derived from the wall-clock fields by
+            // `Lease::reanchor` when the manager replays this snapshot.
+            deadline: std::time::Instant::now(),
+            last_beat: std::time::Instant::now(),
             capabilities: caps_from_json(&caps_str),
             metadata: meta_from_json(&meta_str),
         })
@@ -204,8 +222,8 @@ impl Store for SqliteStore {
             "INSERT OR REPLACE INTO leases
              (resource, owner, id, mode, priority, acquired_at, expires_at,
               lease_duration_ms, last_heartbeat, heartbeat_interval_ms,
-              heartbeat_timeout_ms, capabilities, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+              heartbeat_timeout_ms, epoch, capabilities, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 lease.resource,
                 lease.owner,
@@ -218,6 +236,7 @@ impl Store for SqliteStore {
                 lease.last_heartbeat as i64,
                 lease.heartbeat_interval_ms as i64,
                 lease.heartbeat_timeout_ms as i64,
+                lease.epoch as i64,
                 caps_to_json(&lease.capabilities),
                 meta_to_json(&lease.metadata),
             ],
@@ -344,9 +363,20 @@ impl Store for SqliteStore {
         let max_queue = queue.iter().map(|q| q.id).max().unwrap_or(0) + 1;
         let max_seq = queue.iter().map(|q| q.seq).max().unwrap_or(0) + 1;
 
+        let mut stmt = conn.prepare("SELECT key, value FROM counters WHERE key LIKE 'epoch:%'")?;
+        let epochs = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|(k, v)| k.strip_prefix("epoch:").map(|r| (r.to_string(), v)))
+            .collect();
+
         Ok(Snapshot {
             leases,
             queue,
+            epochs,
             next_lease_id: counter("lease_id")?.max(max_lease),
             next_queue_id: counter("queue_id")?.max(max_queue),
             next_seq: counter("seq")?.max(max_seq),
@@ -374,5 +404,33 @@ impl Store for SqliteStore {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.reverse();
         Ok(rows)
+    }
+
+    fn audit_older_than(&self, cutoff_ms: u64) -> Result<Vec<AuditRecord>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare(
+            "SELECT ts, owner, action, resource, duration_ms, metadata
+             FROM audit WHERE ts < ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![cutoff_ms as i64], |row| {
+                let meta_str: String = row.get("metadata")?;
+                Ok(AuditRecord {
+                    ts: row.get("ts")?,
+                    owner: row.get("owner")?,
+                    action: row.get("action")?,
+                    resource: row.get("resource")?,
+                    duration_ms: row.get::<_, Option<i64>>("duration_ms")?.map(|d| d as u64),
+                    metadata: meta_from_json(&meta_str),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    fn prune_audit_older_than(&self, cutoff_ms: u64) -> Result<u64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let deleted = conn.execute("DELETE FROM audit WHERE ts < ?1", params![cutoff_ms as i64])?;
+        Ok(deleted as u64)
     }
 }

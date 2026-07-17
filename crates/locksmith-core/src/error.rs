@@ -17,6 +17,14 @@ pub enum Error {
     PermissionDenied(String),
     /// Persistence layer failure.
     Store(String),
+    /// The caller's fencing token is stale.
+    EpochMismatch {
+        resource: String,
+        expected: u64,
+        actual: u64,
+    },
+    /// The resource is held by a different owner than expected.
+    HeldByOther { resource: String, owner: String },
 }
 
 impl fmt::Display for Error {
@@ -31,6 +39,19 @@ impl fmt::Display for Error {
             Error::NotFound(what) => write!(f, "not found: {what}"),
             Error::Invalid(what) => write!(f, "invalid request: {what}"),
             Error::PermissionDenied(what) => write!(f, "permission denied: {what}"),
+            Error::EpochMismatch {
+                resource,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "epoch mismatch on '{resource}': expected {expected}, got {actual}"
+                )
+            }
+            Error::HeldByOther { resource, owner } => {
+                write!(f, "resource '{resource}' is held by '{owner}'")
+            }
             Error::Store(what) => write!(f, "store error: {what}"),
         }
     }
@@ -40,6 +61,18 @@ impl std::error::Error for Error {}
 
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
+        Error::Store(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::Store(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
         Error::Store(e.to_string())
     }
 }

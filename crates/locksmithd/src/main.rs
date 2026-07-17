@@ -55,6 +55,15 @@ struct Args {
     /// Default lease duration in seconds.
     #[arg(long, default_value = "1200")]
     default_lease_secs: u64,
+
+    /// Days to retain audit records before archival + pruning (0 = keep forever).
+    #[arg(long, env = "LOCKSMITH_AUDIT_RETAIN_DAYS", default_value = "30")]
+    audit_retain_days: u64,
+
+    /// JSONL archive receiving audit records before they are pruned
+    /// (default: <db>.audit.jsonl when retention is enabled).
+    #[arg(long, env = "LOCKSMITH_AUDIT_ARCHIVE")]
+    audit_archive: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -77,6 +86,12 @@ struct AcquireBody {
     heartbeat_interval_ms: Option<u64>,
     heartbeat_timeout_ms: Option<u64>,
     metadata: Option<serde_json::Value>,
+    /// Fencing precondition: only proceed if the resource's current epoch
+    /// equals this value.
+    if_epoch: Option<u64>,
+    /// Fencing precondition: only proceed if this owner does not hold the
+    /// resource.
+    if_not_held_by: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -138,7 +153,9 @@ fn parse_mode(s: Option<&str>) -> Result<LockMode, Error> {
 fn core_error(err: Error) -> Response {
     let (status, message) = match &err {
         Error::NotHeld { .. } | Error::NotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
-        Error::Conflict { .. } => (StatusCode::CONFLICT, err.to_string()),
+        Error::Conflict { .. } | Error::EpochMismatch { .. } | Error::HeldByOther { .. } => {
+            (StatusCode::CONFLICT, err.to_string())
+        }
         Error::Invalid(_) => (StatusCode::BAD_REQUEST, err.to_string()),
         Error::PermissionDenied(_) => (StatusCode::FORBIDDEN, err.to_string()),
         Error::Store(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
@@ -153,6 +170,18 @@ type ApiResult = Result<Response, Response>;
 #[allow(clippy::result_large_err)]
 fn ok(value: impl serde::Serialize) -> ApiResult {
     Ok(Json(value).into_response())
+}
+
+/// Respond with a lease, echoing its fencing token in the
+/// `X-Locksmith-Epoch` header so downstream writers can reject stale
+/// holders (FM-02/FM-14).
+#[allow(clippy::result_large_err)]
+fn ok_lease(lease: &locksmith_core::Lease) -> ApiResult {
+    let mut resp = Json(lease).into_response();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&lease.epoch.to_string()) {
+        resp.headers_mut().insert("x-locksmith-epoch", value);
+    }
+    Ok(resp)
 }
 
 // ---------------------------------------------------------------------------
@@ -184,15 +213,29 @@ async fn acquire(
     if let Some(ms) = body.lease_ms {
         req = req.lease_ms(ms);
     }
+    if let Some(epoch) = body.if_epoch {
+        req = req.if_epoch(epoch);
+    }
+    if let Some(ref blocked) = body.if_not_held_by {
+        req = req.if_not_held_by(blocked);
+    }
     req.heartbeat_interval_ms = body.heartbeat_interval_ms;
     req.heartbeat_timeout_ms = body.heartbeat_timeout_ms;
     req.metadata = body.metadata.unwrap_or_else(|| serde_json::json!({}));
     let outcome = state.manager.acquire(req).map_err(core_error)?;
-    let status = match &outcome {
-        AcquireOutcome::Granted { .. } | AcquireOutcome::Held { .. } => StatusCode::OK,
-        AcquireOutcome::Queued { .. } => StatusCode::ACCEPTED,
+    let (status, epoch) = match &outcome {
+        AcquireOutcome::Granted { lease } | AcquireOutcome::Held { lease } => {
+            (StatusCode::OK, Some(lease.epoch))
+        }
+        AcquireOutcome::Queued { .. } => (StatusCode::ACCEPTED, None),
     };
-    Ok((status, Json(outcome)).into_response())
+    let mut resp = (status, Json(outcome)).into_response();
+    if let Some(epoch) = epoch {
+        if let Ok(value) = axum::http::HeaderValue::from_str(&epoch.to_string()) {
+            resp.headers_mut().insert("x-locksmith-epoch", value);
+        }
+    }
+    Ok(resp)
 }
 
 async fn release(
@@ -309,7 +352,7 @@ async fn promote(
         .manager
         .promote(&body.resource, &owner, mode)
         .map_err(core_error)?;
-    ok(lease)
+    ok_lease(&lease)
 }
 
 async fn downgrade(
@@ -429,6 +472,9 @@ async fn metrics(State(state): State<AppState>) -> Response {
          # HELP locksmith_queue_promotions_total Queued owners promoted to holders.\n\
          # TYPE locksmith_queue_promotions_total counter\n\
          locksmith_queue_promotions_total {promotions}\n\
+         # HELP locksmith_audit_pruned_total Audit records pruned by retention.\n\
+         # TYPE locksmith_audit_pruned_total counter\n\
+         locksmith_audit_pruned_total {audit_pruned}\n\
          # HELP locksmith_active_leases Currently held leases.\n\
          # TYPE locksmith_active_leases gauge\n\
          locksmith_active_leases {active}\n\
@@ -446,6 +492,7 @@ async fn metrics(State(state): State<AppState>) -> Response {
         transfers = m.transfers,
         conflicts = m.conflicts,
         promotions = m.queue_promotions,
+        audit_pruned = m.audit_pruned,
         active = m.active_leases,
         depth = m.queue_depth,
     );
@@ -561,9 +608,20 @@ async fn main() {
         }
     };
 
+    let audit_archive_path = args.audit_archive.clone().or_else(|| {
+        if args.audit_retain_days > 0 {
+            let mut p = args.db.clone().into_os_string();
+            p.push(".audit.jsonl");
+            Some(PathBuf::from(p))
+        } else {
+            None
+        }
+    });
     let config = Config {
         default_lease_ms: args.default_lease_secs * 1000,
         queue_policy: policy,
+        audit_retention_days: args.audit_retain_days,
+        audit_archive_path,
         ..Config::default()
     };
 

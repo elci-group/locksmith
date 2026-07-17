@@ -97,6 +97,11 @@ impl Store for InMemoryStore {
         Ok(Snapshot {
             leases: inner.leases.values().cloned().collect(),
             queue: inner.queue.values().cloned().collect(),
+            epochs: inner
+                .counters
+                .iter()
+                .filter_map(|(k, v)| k.strip_prefix("epoch:").map(|r| (r.to_string(), *v)))
+                .collect(),
             next_lease_id: get("lease_id"),
             next_queue_id: get("queue_id"),
             next_seq: get("seq"),
@@ -107,5 +112,23 @@ impl Store for InMemoryStore {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let skip = inner.audit.len().saturating_sub(limit);
         Ok(inner.audit.iter().skip(skip).cloned().collect())
+    }
+
+    fn audit_older_than(&self, cutoff_ms: u64) -> Result<Vec<AuditRecord>> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(inner
+            .audit
+            .iter()
+            .filter(|r| r.ts < cutoff_ms)
+            .cloned()
+            .collect())
+    }
+
+    fn prune_audit_older_than(&self, cutoff_ms: u64) -> Result<u64> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let before = inner.audit.len() as u64;
+        inner.audit.retain(|r| r.ts >= cutoff_ms);
+        let after = inner.audit.len() as u64;
+        Ok(before - after)
     }
 }

@@ -1,7 +1,7 @@
 //! Core types shared across Locksmith: resources, leases, queues, config.
 
 use serde::{Deserialize, Serialize};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::scheduler::QueuePolicy;
 
@@ -96,7 +96,16 @@ pub enum LeaseCapability {
     Write,
 }
 
+fn instant_now() -> Instant {
+    Instant::now()
+}
+
 /// A bounded claim on a resource. Every lease expires — always.
+///
+/// Expiry and heartbeat timeouts are evaluated against monotonic `Instant`s
+/// (immune to wall-clock steps); the wall-clock fields exist for
+/// persistence, recovery and display. `reanchor` rebuilds the monotonic
+/// anchors after a store replay.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lease {
     pub id: LeaseId,
@@ -110,6 +119,12 @@ pub struct Lease {
     pub last_heartbeat: TimestampMs,
     pub heartbeat_interval_ms: u64,
     pub heartbeat_timeout_ms: u64,
+    /// Fencing token: bumped on every grant and every ownership/mode change.
+    pub epoch: u64,
+    #[serde(skip, default = "instant_now")]
+    pub deadline: Instant,
+    #[serde(skip, default = "instant_now")]
+    pub last_beat: Instant,
     #[serde(default)]
     pub capabilities: Vec<LeaseCapability>,
     #[serde(default)]
@@ -117,16 +132,30 @@ pub struct Lease {
 }
 
 impl Lease {
-    pub fn is_expired(&self, now: TimestampMs) -> bool {
-        now >= self.expires_at
+    /// Recompute the monotonic anchors from the persisted wall-clock fields.
+    /// Must be called once on every lease replayed from the store: `Instant`
+    /// values are process-local and cannot be persisted.
+    pub fn reanchor(&mut self, now_wall: TimestampMs) {
+        let now = Instant::now();
+        self.deadline = now + Duration::from_millis(self.expires_at.saturating_sub(now_wall));
+        let beat_age = now_wall.saturating_sub(self.last_heartbeat);
+        self.last_beat = now
+            .checked_sub(Duration::from_millis(beat_age))
+            .unwrap_or(now);
     }
 
-    pub fn heartbeat_missed(&self, now: TimestampMs) -> bool {
-        now >= self.last_heartbeat + self.heartbeat_timeout_ms
+    pub fn is_expired(&self) -> bool {
+        Instant::now() >= self.deadline
     }
 
-    pub fn remaining_ms(&self, now: TimestampMs) -> u64 {
-        self.expires_at.saturating_sub(now)
+    pub fn heartbeat_missed(&self) -> bool {
+        self.last_beat.elapsed() >= Duration::from_millis(self.heartbeat_timeout_ms)
+    }
+
+    pub fn remaining_ms(&self) -> u64 {
+        self.deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis() as u64
     }
 }
 
@@ -163,6 +192,12 @@ pub struct Config {
     pub queue_policy: QueuePolicy,
     /// How many events the in-memory event ring buffer retains.
     pub event_buffer: usize,
+    /// Audit retention in days (default 30). Records older than this are
+    /// exported (when `audit_archive_path` is set) and pruned, at most once
+    /// per hour during the expiry sweep. 0 disables pruning.
+    pub audit_retention_days: u64,
+    /// JSONL file that receives exported audit records before pruning.
+    pub audit_archive_path: Option<std::path::PathBuf>,
 }
 
 impl Default for Config {
@@ -173,6 +208,8 @@ impl Default for Config {
             default_heartbeat_timeout_ms: 90 * 1000,
             queue_policy: QueuePolicy::default(),
             event_buffer: 10_000,
+            audit_retention_days: 30,
+            audit_archive_path: None,
         }
     }
 }

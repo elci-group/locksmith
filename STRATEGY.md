@@ -1,6 +1,6 @@
 # Locksmith — Enterprise Development Strategy
 
-Status: v0.1.1 · Owner: Sal · Reviewed: each release
+Status: v0.1.3 · Owner: Sal · Reviewed: each release
 Companion artifacts: `FRACAS.md` (failure register), `deliver.toml`
 (acceptance gate), `.amber.toml` (dependency policy), `kaptaind.toml`
 (change control).
@@ -14,13 +14,22 @@ enterprise grade along five pillars, in dependency order, without breaking
 the design tenets (leases over locks, deterministic state, crash
 resilience, no distributed database).
 
-## 2. Current state assessment (v0.1.1)
+## 2. Current state assessment (v0.1.3)
 
 **Strengths**
 
 - Core semantics complete: leases, hierarchy, five queue policies,
   heartbeat expiry, transfer/steal/promote/downgrade, crash recovery —
-  32 tests including real SQLite restart recovery.
+  38 tests including real SQLite restart recovery.
+- Fencing tokens (FM-02/FM-14 closed): persisted per-resource epochs,
+  conditional acquire (`if_epoch`, `if_not_held_by`), `X-Locksmith-Epoch`
+  response header.
+- Monotonic timing (FM-03 closed): expiry and heartbeat timeouts use
+  `Instant` anchors re-derived from persisted wall-clock fields on
+  recovery.
+- Scale and ops: prefix index for descendant checks (FM-11 closed);
+  audit retention with JSONL export-before-prune, throttled hourly
+  (FM-07 closed).
 - Observable: audit log, event bus, Prometheus metrics, JSON API.
 - Lean supply chain after amber pass: CLI has 5 direct dependencies
   (reqwest/hyper/rustls removed for a std-based loopback client).
@@ -31,12 +40,10 @@ resilience, no distributed database).
 
 **Gaps (drives the phases below)**
 
-- No fencing: an owner whose lease was revoked can still write (FM-02,
-  the register's top RPN).
-- Wall-clock timing only (FM-03); hierarchy scans are O(n) (FM-11);
-  audit table grows forever (FM-07).
+- No latency benchmarks, fuzzing, or property tests yet (Phase 2 items
+  3 and 5).
 - Single transport (loopback TCP), single auth provider (API keys).
-- No fuzzing, property tests, or latency benchmarks yet.
+- Waiter aging (FM-08) and fleet-id in `/health` (FM-12) outstanding.
 
 ## 3. Amber dependency policy (standing)
 
@@ -62,24 +69,27 @@ the diff in this table.
 - [x] FRACAS register; kaptaind monitoring; CI workflow
 - [x] `.amber.toml` policy; deliver gate
 
-### Phase 2 — Correctness & scale (next)
+### Phase 2 — Correctness & scale (in progress)
 
-1. **Fencing tokens** (FM-02/FM-14): epoch counter per resource, returned
-   on every acquire/promotion; `X-Locksmith-Epoch` advisory header so
-   downstream writers can reject stale holders. Conditional acquire
-   (`if_epoch`) for TOCTOU-safe clients.
-2. **Monotonic timing** (FM-03): `Instant`-based deadline arithmetic
-   internally, wall clock only for display/API.
-3. **Descendant index** (FM-11): prefix tree for hierarchy checks;
-   criterion benchmarks asserting acquire p99 < 1 ms at 100k leases.
-4. **Audit retention** (FM-07): `--audit-retain-days` with archival
-   export to JSONL before prune.
+1. **Fencing tokens** (FM-02/FM-14) ✅ v0.1.3: epoch counter per resource,
+   persisted across restarts, returned on every acquire/promotion;
+   `X-Locksmith-Epoch` advisory header so downstream writers can reject
+   stale holders. Conditional acquire (`if_epoch`, `if_not_held_by`) for
+   TOCTOU-safe clients.
+2. **Monotonic timing** (FM-03) ✅ v0.1.3: `Instant`-based deadline
+   arithmetic internally, re-anchored from persisted wall-clock fields on
+   recovery; wall clock only for display/API.
+3. **Descendant index** (FM-11): prefix index for hierarchy checks shipped
+   v0.1.3; criterion benchmarks asserting acquire p99 < 1 ms at 100k
+   leases still pending.
+4. **Audit retention** (FM-07) ✅ v0.1.3: `--audit-retain-days` with
+   archival export to JSONL before prune, throttled to one pass per hour.
 5. **Test depth**: proptest on hierarchy/conflict logic, cargo-fuzz on
    resource-id parsing and the store's row decoders; fleet-id in
    `/health` (FM-12); waiter aging (FM-08).
 
-Exit criteria: zero Open FM rows with RPN ≥ 12; benches meet the
-directive's latency targets at 100k leases.
+Exit criteria: zero Open FM rows with RPN ≥ 12 — met at v0.1.3; benches
+must meet the directive's latency targets at 100k leases.
 
 ### Phase 3 — Enterprise surface
 

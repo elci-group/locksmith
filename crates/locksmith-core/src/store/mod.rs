@@ -20,6 +20,8 @@ use crate::types::{Lease, QueueEntry, QueueEntryId};
 pub struct Snapshot {
     pub leases: Vec<Lease>,
     pub queue: Vec<QueueEntry>,
+    /// Per-resource fencing epochs (persisted as `epoch:<resource>` counters).
+    pub epochs: Vec<(crate::types::ResourceId, u64)>,
     pub next_lease_id: u64,
     pub next_queue_id: u64,
     pub next_seq: u64,
@@ -47,4 +49,9 @@ pub trait Store: Send + Sync {
     fn load_snapshot(&self) -> Result<Snapshot>;
     /// Most recent audit records, oldest first.
     fn audit_tail(&self, limit: usize) -> Result<Vec<AuditRecord>>;
+    /// Audit records older than `cutoff_ms`, oldest first (read for archival
+    /// export before pruning).
+    fn audit_older_than(&self, cutoff_ms: u64) -> Result<Vec<AuditRecord>>;
+    /// Prune audit records older than `cutoff_ms` (wall-clock timestamp).
+    fn prune_audit_older_than(&self, cutoff_ms: u64) -> Result<u64>;
 }

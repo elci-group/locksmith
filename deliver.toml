@@ -7,7 +7,7 @@ forbid_regex = ["TODO", "FIXME", "unimplemented!"]
 path = "crates/locksmith-core/src/manager.rs"
 required = true
 forbid_regex = ["TODO", "FIXME", "unimplemented!"]
-require_regex = ["pub fn acquire", "pub fn release", "pub fn sweep", "fn promote_queue"]
+require_regex = ["pub fn acquire", "pub fn release", "pub fn sweep", "fn promote_queue", "if_epoch", "fn bump_epoch"]
 
 [[file]]
 path = "crates/locksmith-core/src/store/sqlite.rs"
@@ -19,7 +19,7 @@ require_regex = ["CREATE TABLE IF NOT EXISTS leases", "CREATE TABLE IF NOT EXIST
 path = "crates/locksmithd/src/main.rs"
 required = true
 forbid_regex = ["TODO", "FIXME", "unimplemented!"]
-require_regex = ["/v1/acquire", "/v1/release", "/metrics"]
+require_regex = ["/v1/acquire", "/v1/release", "/metrics", "if_epoch", "x-locksmith-epoch"]
 
 [[file]]
 path = "crates/locksmith-cli/src/main.rs"

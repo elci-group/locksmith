@@ -127,3 +127,60 @@ fn audit_persists_across_restart() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+#[test]
+fn epochs_survive_restart() {
+    let path = temp_db("epochs");
+    {
+        let store = SqliteStore::open(&path).unwrap();
+        let m = LockManager::new(store, Config::default()).unwrap();
+        m.acquire(AcquireRequest::new("r", "a", LockMode::Exclusive))
+            .unwrap();
+        assert_eq!(m.inspect("r").epoch, 1);
+        m.transfer("r", "a", "b").unwrap();
+        assert_eq!(m.inspect("r").epoch, 2);
+    } // manager + store dropped: simulated crash
+
+    {
+        let store = SqliteStore::open(&path).unwrap();
+        let m = LockManager::new(store, Config::default()).unwrap();
+        let view = m.inspect("r");
+        assert_eq!(view.epoch, 2, "resource epoch must survive restart");
+        assert_eq!(view.leases.len(), 1);
+        assert_eq!(view.leases[0].epoch, 2, "lease keeps its fencing token");
+        assert_eq!(view.leases[0].owner, "b");
+        // The sequence continues after recovery; tokens are never reissued.
+        m.transfer("r", "b", "c").unwrap();
+        assert_eq!(m.inspect("r").epoch, 3);
+    }
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn live_lease_not_expired_by_restart() {
+    // Regression: monotonic deadlines must be re-anchored from the persisted
+    // wall-clock expiry on recovery, not reset to "now" (which would kill
+    // every lease the moment the daemon restarts).
+    let path = temp_db("reanchor");
+    {
+        let store = SqliteStore::open(&path).unwrap();
+        let m = LockManager::new(store, Config::default()).unwrap(); // 20 min leases
+        m.acquire(AcquireRequest::new("r", "a", LockMode::Exclusive))
+            .unwrap();
+    }
+    {
+        let store = SqliteStore::open(&path).unwrap();
+        let m = LockManager::new(store, Config::default()).unwrap();
+        let view = m.inspect("r");
+        assert_eq!(view.leases.len(), 1, "live lease must survive recovery");
+        assert!(m.sweep().unwrap().expired.is_empty());
+        assert!(m.inspect("r").leases[0].remaining_ms() > 0);
+    }
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}

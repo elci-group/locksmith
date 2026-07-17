@@ -73,6 +73,7 @@ Queue:
 
 ```
 locksmith acquire <resource> [-m exclusive|shared|intent] [-l 20m] [-p high] [--wait]
+                  [--if-epoch N] [--if-not-held-by OWNER]
 locksmith release <resource>
 locksmith renew <resource>
 locksmith heartbeat [resources...]
@@ -110,6 +111,25 @@ a held lease.
 Queue policies (`locksmithd --policy`): `fifo`, `priority`, `shortest-lease`,
 `oldest-waiting`, `weighted-fair`.
 
+## Fencing tokens
+
+Every resource has a monotonic **epoch**, bumped on every grant, promote and
+transfer and persisted across restarts. Granted and promoted leases return it
+in the lease body and in the `X-Locksmith-Epoch` response header. Downstream
+writers use it as a fencing token: store the epoch alongside the data and
+refuse writes carrying an older one — a holder whose lease was revoked can no
+longer mutate the resource unnoticed (FM-02).
+
+`locksmith inspect` reports the current resource epoch. Acquires can carry
+atomic preconditions for TOCTOU-safe clients (FM-14): `if_epoch` requires the
+resource's current epoch to match, `if_not_held_by` refuses the acquire while
+the named owner holds the resource. Both fail with HTTP 409.
+
+```bash
+locksmith acquire deploy:prod --if-epoch 7
+locksmith acquire deploy:prod --if-not-held-by openclaw
+```
+
 ## REST API
 
 All endpoints take/return JSON. Resource ids travel in bodies or query
@@ -118,7 +138,7 @@ strings, never in the path (they contain `/`).
 | Method | Path | Body / query |
 |---|---|---|
 | GET  | `/health` | — |
-| POST | `/v1/acquire` | `{resource, owner?, mode?, priority?, lease_ms?, metadata?}` |
+| POST | `/v1/acquire` | `{resource, owner?, mode?, priority?, lease_ms?, metadata?, if_epoch?, if_not_held_by?}` |
 | POST | `/v1/release` | `{resource, owner?}` |
 | POST | `/v1/renew` | `{resource, owner?}` |
 | POST | `/v1/heartbeat` | `{owner?, resources?}` |
@@ -132,6 +152,9 @@ strings, never in the path (they contain `/`).
 | GET  | `/v1/audit?limit=` | audit log tail |
 | GET  | `/v1/metrics` | metrics as JSON |
 | GET  | `/metrics` | Prometheus text exposition |
+
+Responses that return a lease (`acquire`, `promote`) also carry its fencing
+token in the `X-Locksmith-Epoch` header.
 
 ## Authentication
 
@@ -171,6 +194,12 @@ second daemon can never share one database (split brain). The lock is
 released by the kernel when the process dies — a stale lock file never
 blocks a restart.
 
+Audit records are retained for `--audit-retain-days` (default 30; 0 keeps
+them forever). Once an hour the sweeper exports records older than that to
+`<db>.audit.jsonl` (override with `--audit-archive`) and only then prunes
+them — an export failure aborts the prune, so history is never silently
+dropped.
+
 ## Failure model
 
 ```
@@ -207,11 +236,10 @@ locksmith release task:123
 
 The manager keeps authoritative state in memory and writes through to SQLite;
 an uncontended acquire is a hash-map check plus one SQLite write (sub-millisecond
-locally). Hierarchy checks scan the lease map, so deep wide trees with
-hundreds of thousands of simultaneous leases will want a descendant index —
-noted as future work. The 1M-lease / 100k-heartbeat-per-second targets from
-the directive are design goals for later optimization passes, not benchmarks
-this release claims.
+locally). Hierarchy conflict checks run against a prefix index over active
+leases rather than scanning the lease map. The 1M-lease / 100k-heartbeat-per-second
+targets from the directive are design goals for later optimization passes, not
+benchmarks this release claims.
 
 ## What v0.1 does not include
 
@@ -226,14 +254,16 @@ The directive describes a broad end-state. Deliberately deferred:
 ## Development
 
 ```bash
-cargo test --workspace    # 32 tests: manager semantics, hierarchy, recovery
+cargo test --workspace    # 38 tests: manager semantics, fencing, hierarchy, recovery
 cargo build --release
 ```
 
 Core tests cover the conflict matrix, hierarchical locking, queue promotion
 under every policy, lease/heartbeat expiry, steal/transfer/promote/downgrade,
-the std HTTP client, and SQLite crash recovery (leases and queues survive
-restart; stale leases expire and promote on recovery).
+fencing epochs (conditional acquire, persistence across restart), audit
+retention export+prune, the std HTTP client, and SQLite crash recovery
+(leases and queues survive restart; stale leases expire and promote on
+recovery; live leases keep their remaining time).
 
 ## Project governance
 

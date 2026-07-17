@@ -61,6 +61,14 @@ enum Command {
         /// Give up waiting after this many seconds.
         #[arg(long, default_value = "300")]
         wait_timeout: u64,
+        /// Fencing precondition: fail unless the resource's current epoch
+        /// equals this value (see `locksmith inspect`).
+        #[arg(long)]
+        if_epoch: Option<u64>,
+        /// Fencing precondition: fail if this owner currently holds the
+        /// resource.
+        #[arg(long)]
+        if_not_held_by: Option<String>,
         /// Attach JSON metadata to the lease.
         #[arg(long)]
         metadata: Option<String>,
@@ -246,6 +254,7 @@ fn parse_duration_ms(s: &str) -> Result<u64, String> {
 fn print_lease(lease: &Lease) {
     println!("Owner:    {}", lease.owner);
     println!("Mode:     {}", lease.mode.as_str());
+    println!("Token:    {}", lease.epoch);
     println!("Since:    {} UTC", fmt_hms(lease.acquired_at));
     println!(
         "Expires:  {} UTC ({})",
@@ -268,6 +277,8 @@ fn cmd_acquire(
     wait: bool,
     wait_timeout: u64,
     metadata: Option<&str>,
+    if_epoch: Option<u64>,
+    if_not_held_by: Option<&str>,
 ) -> Result<(), String> {
     if LockMode::parse(mode).is_none() {
         return Err(format!("unknown mode '{mode}' (exclusive|shared|intent)"));
@@ -294,6 +305,8 @@ fn cmd_acquire(
         "priority": priority,
         "lease_ms": lease_ms,
         "metadata": meta,
+        "if_epoch": if_epoch,
+        "if_not_held_by": if_not_held_by,
     });
 
     let started = std::time::Instant::now();
@@ -435,6 +448,7 @@ fn cmd_inspect(ctx: &Ctx, resource: &str) -> Result<(), String> {
         return Ok(());
     }
     println!("Resource: {resource}");
+    println!("Epoch:    {}", view.epoch);
     if view.leases.is_empty() {
         println!("Owner:    (none — unlocked)");
     } else {
@@ -646,6 +660,7 @@ fn cmd_metrics(ctx: &Ctx) -> Result<(), String> {
     println!("Transfers:        {}", snapshot.transfers);
     println!("Conflicts:        {}", snapshot.conflicts);
     println!("Queue promotions: {}", snapshot.queue_promotions);
+    println!("Audit pruned:     {}", snapshot.audit_pruned);
     Ok(())
 }
 
@@ -688,6 +703,8 @@ fn main() {
             priority,
             wait,
             wait_timeout,
+            if_epoch,
+            if_not_held_by,
             metadata,
         } => cmd_acquire(
             &ctx,
@@ -698,6 +715,8 @@ fn main() {
             wait,
             wait_timeout,
             metadata.as_deref(),
+            if_epoch,
+            if_not_held_by.as_deref(),
         ),
         Command::Release { resource } => cmd_release(&ctx, &resource),
         Command::Renew { resource } => cmd_renew(&ctx, &resource),
