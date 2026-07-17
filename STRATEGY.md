@@ -1,6 +1,6 @@
 # Locksmith — Enterprise Development Strategy
 
-Status: v0.1.3 · Owner: Sal · Reviewed: each release
+Status: v0.1.4 · Owner: Sal · Reviewed: each release
 Companion artifacts: `FRACAS.md` (failure register), `deliver.toml`
 (acceptance gate), `.amber.toml` (dependency policy), `kaptaind.toml`
 (change control).
@@ -14,7 +14,7 @@ enterprise grade along five pillars, in dependency order, without breaking
 the design tenets (leases over locks, deterministic state, crash
 resilience, no distributed database).
 
-## 2. Current state assessment (v0.1.3)
+## 2. Current state assessment (v0.1.4)
 
 **Strengths**
 
@@ -71,24 +71,24 @@ the diff in this table.
 
 ### Phase 2 — Correctness & scale (in progress)
 
-1. **Fencing tokens** (FM-02/FM-14) ✅ v0.1.3: epoch counter per resource,
+1. **Fencing tokens** (FM-02/FM-14) ✅ v0.1.4: epoch counter per resource,
    persisted across restarts, returned on every acquire/promotion;
    `X-Locksmith-Epoch` advisory header so downstream writers can reject
    stale holders. Conditional acquire (`if_epoch`, `if_not_held_by`) for
    TOCTOU-safe clients.
-2. **Monotonic timing** (FM-03) ✅ v0.1.3: `Instant`-based deadline
+2. **Monotonic timing** (FM-03) ✅ v0.1.4: `Instant`-based deadline
    arithmetic internally, re-anchored from persisted wall-clock fields on
    recovery; wall clock only for display/API.
 3. **Descendant index** (FM-11): prefix index for hierarchy checks shipped
-   v0.1.3; criterion benchmarks asserting acquire p99 < 1 ms at 100k
+   v0.1.4; criterion benchmarks asserting acquire p99 < 1 ms at 100k
    leases still pending.
-4. **Audit retention** (FM-07) ✅ v0.1.3: `--audit-retain-days` with
+4. **Audit retention** (FM-07) ✅ v0.1.4: `--audit-retain-days` with
    archival export to JSONL before prune, throttled to one pass per hour.
 5. **Test depth**: proptest on hierarchy/conflict logic, cargo-fuzz on
    resource-id parsing and the store's row decoders; fleet-id in
    `/health` (FM-12); waiter aging (FM-08).
 
-Exit criteria: zero Open FM rows with RPN ≥ 12 — met at v0.1.3; benches
+Exit criteria: zero Open FM rows with RPN ≥ 12 — met at v0.1.4; benches
 must meet the directive's latency targets at 100k leases.
 
 ### Phase 3 — Enterprise surface
