@@ -1,0 +1,13 @@
+version: 1
+project: "locksmith"
+generated:
+  by: dreamseq
+  date: 2026-08-07
+  confidence: 0.00
+source:
+    logs: 0
+    unique_events: 0
+    segments: 0
+    steering_events: 0
+
+dreams:
