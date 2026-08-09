@@ -3,11 +3,70 @@ project: "locksmith"
 generated:
   by: dreamseq
   date: 2026-08-07
-  confidence: 0.00
+  confidence: 0.86
 source:
-    logs: 0
-    unique_events: 0
-    segments: 0
-    steering_events: 0
+    logs: 108791
+    unique_events: 53027
+    segments: 42632
+    steering_events: 61
 
 dreams:
+
+  - id: dream-001
+    priority: LOW
+    category: workflow-friction
+    title: "tool-Missing"
+    problem: "Missing tool: Nous authentication - Provides access to the Nous LLM provider for auxiliary calls"
+    evidence:
+      reason: "Missing tool: Nous authentication - Provides access to the Nous LLM provider for auxiliary calls"
+      confidence: 0.90
+      mutation_fitness: 0.82
+    affected:
+      - none identified
+    proposed_mutation:
+      action: create capability
+      capability: "tool-Missing"
+    acceptance:
+      - Evidence-backed intervention reduces recurrence of this friction
+      - Outcome is verified by tests or deterministic operational checks
+    expected_value: "12 min/day"
+
+  - id: dream-002
+    priority: HIGH
+    category: workflow-friction
+    title: "workflow-acceleration"
+    problem: "59 steering events clustered as MissingTool"
+    evidence:
+      reason: "59 steering events clustered as MissingTool"
+      confidence: 0.90
+      mutation_fitness: 0.79
+    affected:
+      - "goblin"
+      - "deckhand"
+      - "kaptaind"
+    proposed_mutation:
+      action: extend existing capability
+      capability: "workflow-acceleration"
+    acceptance:
+      - Evidence-backed intervention reduces recurrence of this friction
+      - Outcome is verified by tests or deterministic operational checks
+    expected_value: "94 min/day"
+
+  - id: dream-003
+    priority: MEDIUM
+    category: workflow-friction
+    title: "tool-auxiliary_client"
+    problem: "auxiliary_client friction: Automatic skipping of providers when credit/auth errors occur, causing temporary loss of capability"
+    evidence:
+      reason: "auxiliary_client friction: Automatic skipping of providers when credit/auth errors occur, causing temporary loss of capability"
+      confidence: 0.78
+      mutation_fitness: 0.78
+    affected:
+      - none identified
+    proposed_mutation:
+      action: create capability
+      capability: "tool-auxiliary_client"
+    acceptance:
+      - Evidence-backed intervention reduces recurrence of this friction
+      - Outcome is verified by tests or deterministic operational checks
+    expected_value: "15 min/day"
