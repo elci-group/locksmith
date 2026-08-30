@@ -2,6 +2,8 @@
 //!
 //! Exposes the lease manager over a REST API, runs the heartbeat sweeper,
 //! and serves Prometheus metrics.
+mod curly_expand;
+
 
 mod auth;
 
@@ -561,7 +563,7 @@ impl DaemonLock {
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() {
+async fn __curly_original_main() {
     let args = Args::parse();
 
     let policy = match QueuePolicy::parse(&args.policy) {
@@ -685,6 +687,109 @@ async fn main() {
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("server error: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn main() {
+    let raw_args: Vec<String> = std::env::args().collect();
+    let mut positions: Vec<usize> = Vec::new();
+    let mut fields: Vec<Vec<String>> = Vec::new();
+    for (__i, __a) in raw_args.iter().enumerate() {
+        if __a == "--db" {
+            if let Some(__v) = raw_args.get(__i + 1) {
+                positions.push(__i + 1);
+                fields.push(curly_expand::expand_or_literal(__v));
+            }
+            break;
+        } else if let Some(__v) = __a.strip_prefix("--db=") {
+            positions.push(__i);
+            fields.push(
+                curly_expand::expand_or_literal(__v)
+                    .into_iter()
+                    .map(|v| format!("--db={}", v))
+                    .collect(),
+            );
+            break;
+        }
+    }
+    for (__i, __a) in raw_args.iter().enumerate() {
+        if __a == "--policy" {
+            if let Some(__v) = raw_args.get(__i + 1) {
+                positions.push(__i + 1);
+                fields.push(curly_expand::expand_or_literal(__v));
+            }
+            break;
+        } else if let Some(__v) = __a.strip_prefix("--policy=") {
+            positions.push(__i);
+            fields.push(
+                curly_expand::expand_or_literal(__v)
+                    .into_iter()
+                    .map(|v| format!("--policy={}", v))
+                    .collect(),
+            );
+            break;
+        }
+    }
+    for (__i, __a) in raw_args.iter().enumerate() {
+        if __a == "--api-keys" {
+            if let Some(__v) = raw_args.get(__i + 1) {
+                positions.push(__i + 1);
+                fields.push(curly_expand::expand_or_literal(__v));
+            }
+            break;
+        } else if let Some(__v) = __a.strip_prefix("--api-keys=") {
+            positions.push(__i);
+            fields.push(
+                curly_expand::expand_or_literal(__v)
+                    .into_iter()
+                    .map(|v| format!("--api-keys={}", v))
+                    .collect(),
+            );
+            break;
+        }
+    }
+    for (__i, __a) in raw_args.iter().enumerate() {
+        if __a == "--audit-archive" {
+            if let Some(__v) = raw_args.get(__i + 1) {
+                positions.push(__i + 1);
+                fields.push(curly_expand::expand_or_literal(__v));
+            }
+            break;
+        } else if let Some(__v) = __a.strip_prefix("--audit-archive=") {
+            positions.push(__i);
+            fields.push(
+                curly_expand::expand_or_literal(__v)
+                    .into_iter()
+                    .map(|v| format!("--audit-archive={}", v))
+                    .collect(),
+            );
+            break;
+        }
+    }
+
+    if fields.is_empty() || fields.iter().all(|f| f.len() <= 1) {
+        __curly_original_main();
+        return;
+    }
+
+    let combos = curly_expand::cartesian(&fields);
+    let exe = std::env::current_exe().expect("resolve current exe");
+    let mut had_failure = false;
+    for combo in &combos {
+        let mut new_args = raw_args.clone();
+        for (slot, value) in positions.iter().zip(combo.iter()) {
+            new_args[*slot] = value.clone();
+        }
+        let status = std::process::Command::new(&exe)
+            .args(&new_args[1..])
+            .status()
+            .expect("failed to re-exec self");
+        if !status.success() {
+            had_failure = true;
+        }
+    }
+    if had_failure {
         std::process::exit(1);
     }
 }
