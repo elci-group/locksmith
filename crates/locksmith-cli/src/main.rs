@@ -1,7 +1,9 @@
 //! locksmith — command line client for the Locksmith coordination daemon.
 
 mod http;
+mod theme;
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -9,8 +11,9 @@ use serde::Deserialize;
 
 use locksmith_core::{
     AcquireOutcome, AuditRecord, Event, Lease, LockMode, MetricsSnapshot, Priority, QueueEntry,
-    ResourceView,
+    ResourceView, SoftwareProvider,
 };
+use theme::{RenderMode, Status, Theme, Variant};
 
 /// Locksmith CLI: workspace locking and coordination.
 #[derive(Parser)]
@@ -125,6 +128,42 @@ enum Command {
     },
     /// Show daemon metrics.
     Metrics,
+    /// Manage sealed secrets at rest. Local file operations — no running
+    /// daemon required.
+    Trust {
+        #[command(subcommand)]
+        command: TrustCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TrustCommand {
+    /// Seal a plaintext API keys JSON file for `locksmithd --api-keys-sealed`.
+    SealKeys {
+        /// Plaintext api keys JSON file (see README `## Authentication`).
+        #[arg(long)]
+        input: PathBuf,
+        /// Path to write the sealed file to.
+        #[arg(long)]
+        output: PathBuf,
+        /// Software trust key file, generated if it doesn't exist yet.
+        #[arg(long, env = "LOCKSMITH_TRUST_KEY")]
+        trust_key: PathBuf,
+    },
+    /// Unseal a sealed API keys file back to plaintext (inspection/migration).
+    UnsealKeys {
+        /// Sealed input file.
+        #[arg(long)]
+        input: PathBuf,
+        /// Where to write the plaintext (default: stdout).
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Software trust key file that sealed the input.
+        #[arg(long, env = "LOCKSMITH_TRUST_KEY")]
+        trust_key: PathBuf,
+    },
+    /// Report the trust backend in use on this machine.
+    Status,
 }
 
 struct Ctx {
@@ -134,6 +173,7 @@ struct Ctx {
     owner_explicit: bool,
     api_key: Option<String>,
     json: bool,
+    theme: Theme,
 }
 
 impl Ctx {
@@ -251,13 +291,15 @@ fn parse_duration_ms(s: &str) -> Result<u64, String> {
         .map_err(|_| format!("invalid duration '{s}' (try 30s, 20m, 1h)"))
 }
 
-fn print_lease(lease: &Lease) {
-    println!("Owner:    {}", lease.owner);
-    println!("Mode:     {}", lease.mode.as_str());
-    println!("Token:    {}", lease.epoch);
-    println!("Since:    {} UTC", fmt_hms(lease.acquired_at));
+fn print_lease(theme: &Theme, lease: &Lease) {
+    let icon = theme.owned_icon(Status::Held(lease.mode), &lease.owner, Variant::Holding);
+    let owner = theme.owner(&lease.owner, Variant::Holding);
+    println!("{icon} Owner:    {owner}");
+    println!("  Mode:     {}", lease.mode.as_str());
+    println!("  Token:    {}", lease.epoch);
+    println!("  Since:    {} UTC", fmt_hms(lease.acquired_at));
     println!(
-        "Expires:  {} UTC ({})",
+        "  Expires:  {} UTC ({})",
         fmt_hms(lease.expires_at),
         fmt_relative(lease.expires_at)
     );
@@ -312,15 +354,21 @@ fn cmd_acquire(
     let started = std::time::Instant::now();
     let timeout = Duration::from_secs(wait_timeout);
     let mut last_position: Option<usize> = None;
+    let mut spinner = ctx.theme.spinner();
+    let animate = ctx.theme.animate() && wait;
     loop {
         let outcome: AcquireOutcome = ctx.post("/v1/acquire", &body)?;
         match outcome {
             AcquireOutcome::Granted { lease } => {
+                if animate {
+                    eprint!("\r\x1b[2K");
+                }
                 if ctx.json {
                     println!("{}", serde_json::to_string_pretty(&lease).unwrap());
                 } else {
-                    println!("Acquired {resource}");
-                    print_lease(&lease);
+                    let icon = ctx.theme.status_icon(Status::Held(lease.mode));
+                    println!("{icon} Acquired {resource}");
+                    print_lease(&ctx.theme, &lease);
                 }
                 return Ok(());
             }
@@ -328,8 +376,9 @@ fn cmd_acquire(
                 if ctx.json {
                     println!("{}", serde_json::to_string_pretty(&lease).unwrap());
                 } else {
-                    println!("Already held {resource}");
-                    print_lease(&lease);
+                    let icon = ctx.theme.status_icon(Status::Held(lease.mode));
+                    println!("{icon} Already held {resource}");
+                    print_lease(&ctx.theme, &lease);
                 }
                 return Ok(());
             }
@@ -346,18 +395,39 @@ fn cmd_acquire(
                             .unwrap()
                         );
                     } else {
-                        println!("Queued for {resource} at position {position}");
-                        println!("Owner:    {} (holding)", holding_summary(ctx, resource));
-                        println!("Mode:     {}", entry.mode.as_str());
-                        println!("Hint:     re-run with --wait to block until granted");
+                        let icon = ctx.theme.icon(Status::Queued);
+                        println!("{icon} Queued for {resource} at position {position}");
+                        println!("  Held by:  {}", holding_summary(ctx, resource));
+                        println!(
+                            "  Mode:     {} ({})",
+                            entry.mode.as_str(),
+                            ctx.theme.owner(&ctx.owner, Variant::Attempting)
+                        );
+                        println!(
+                            "  {}",
+                            ctx.theme
+                                .dim("Hint:     re-run with --wait to block until granted")
+                        );
                     }
                     return Ok(());
                 }
-                if last_position != Some(position) {
-                    eprintln!("waiting for {resource}: queue position {position}");
+                if animate {
+                    let frame = spinner.tick();
+                    let owner = ctx.theme.owner(&ctx.owner, Variant::Attempting);
+                    eprint!(
+                        "\r\x1b[2K{frame} waiting for {resource}: position {position} ({owner})"
+                    );
+                    use std::io::Write;
+                    let _ = std::io::stderr().flush();
+                } else if last_position != Some(position) {
+                    let icon = ctx.theme.icon(Status::Queued);
+                    eprintln!("{icon} waiting for {resource}: queue position {position}");
                     last_position = Some(position);
                 }
                 if started.elapsed() > timeout {
+                    if animate {
+                        eprintln!();
+                    }
                     return Err(format!(
                         "timed out after {wait_timeout}s waiting for '{resource}' (position {position})"
                     ));
@@ -374,7 +444,15 @@ fn holding_summary(ctx: &Ctx, resource: &str) -> String {
         Ok(v) if !v.leases.is_empty() => v
             .leases
             .iter()
-            .map(|l| format!("{} ({})", l.owner, l.mode.as_str()))
+            .map(|l| {
+                format!(
+                    "{} {} ({})",
+                    ctx.theme
+                        .owned_icon(Status::Held(l.mode), &l.owner, Variant::Holding),
+                    ctx.theme.owner(&l.owner, Variant::Holding),
+                    l.mode.as_str()
+                )
+            })
             .collect::<Vec<_>>()
             .join(", "),
         _ => "unknown".to_string(),
@@ -393,11 +471,18 @@ fn cmd_release(ctx: &Ctx, resource: &str) -> Result<(), String> {
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&resp.promoted).unwrap());
     } else {
-        println!("Released {resource} ({})", ctx.owner);
+        let icon = ctx.theme.status_icon(Status::Free);
+        println!(
+            "{icon} Released {resource} ({})",
+            ctx.theme.owner(&ctx.owner, Variant::Holding)
+        );
         for lease in &resp.promoted {
+            let up = ctx
+                .theme
+                .owned_icon(Status::Promoted, &lease.owner, Variant::Holding);
             println!(
-                "Promoted: {} now holds {} ({})",
-                lease.owner,
+                "  {up} Promoted: {} now holds {} ({})",
+                ctx.theme.owner(&lease.owner, Variant::Holding),
                 lease.resource,
                 lease.mode.as_str()
             );
@@ -414,8 +499,9 @@ fn cmd_renew(ctx: &Ctx, resource: &str) -> Result<(), String> {
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&lease).unwrap());
     } else {
-        println!("Renewed {resource}");
-        print_lease(&lease);
+        let icon = ctx.theme.status_icon(Status::Held(lease.mode));
+        println!("{icon} Renewed {resource}");
+        print_lease(&ctx.theme, &lease);
     }
     Ok(())
 }
@@ -433,9 +519,11 @@ fn cmd_heartbeat(ctx: &Ctx, resources: &[String]) -> Result<(), String> {
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&resp).unwrap());
     } else {
+        let icon = ctx.theme.status_icon(Status::Heartbeat);
         println!(
-            "Heartbeat: {} lease(s) refreshed for {}",
-            resp.leases_refreshed, ctx.owner
+            "{icon} Heartbeat: {} lease(s) refreshed for {}",
+            resp.leases_refreshed,
+            ctx.theme.owner(&ctx.owner, Variant::Holding)
         );
     }
     Ok(())
@@ -447,23 +535,31 @@ fn cmd_inspect(ctx: &Ctx, resource: &str) -> Result<(), String> {
         println!("{}", serde_json::to_string_pretty(&view).unwrap());
         return Ok(());
     }
-    println!("Resource: {resource}");
-    println!("Epoch:    {}", view.epoch);
+    let head_icon = if view.leases.is_empty() {
+        ctx.theme.status_icon(Status::Free)
+    } else {
+        ctx.theme.status_icon(Status::Held(view.leases[0].mode))
+    };
+    println!("{head_icon} Resource: {resource}");
+    println!("  Epoch:    {}", view.epoch);
     if view.leases.is_empty() {
-        println!("Owner:    (none — unlocked)");
+        println!("  Owner:    (none — unlocked)");
     } else {
         for lease in &view.leases {
-            print_lease(lease);
+            print_lease(&ctx.theme, lease);
             println!();
         }
     }
     if !view.queue.is_empty() {
         println!("Queue:");
         for (i, entry) in view.queue.iter().enumerate() {
+            let icon = ctx
+                .theme
+                .owned_icon(Status::Queued, &entry.owner, Variant::Attempting);
             println!(
-                "  {}. {} ({}, {:?} priority)",
+                "  {}. {icon} {} ({}, {:?} priority)",
                 i + 1,
-                entry.owner,
+                ctx.theme.owner(&entry.owner, Variant::Attempting),
                 entry.mode.as_str(),
                 entry.priority
             );
@@ -472,10 +568,13 @@ fn cmd_inspect(ctx: &Ctx, resource: &str) -> Result<(), String> {
     if !view.ancestor_locks.is_empty() {
         println!("Ancestor locks:");
         for lease in &view.ancestor_locks {
+            let icon =
+                ctx.theme
+                    .owned_icon(Status::Held(lease.mode), &lease.owner, Variant::Holding);
             println!(
-                "  {} held by {} ({})",
+                "  {icon} {} held by {} ({})",
                 lease.resource,
-                lease.owner,
+                ctx.theme.owner(&lease.owner, Variant::Holding),
                 lease.mode.as_str()
             );
         }
@@ -483,10 +582,13 @@ fn cmd_inspect(ctx: &Ctx, resource: &str) -> Result<(), String> {
     if !view.descendant_locks.is_empty() {
         println!("Descendant locks:");
         for lease in &view.descendant_locks {
+            let icon =
+                ctx.theme
+                    .owned_icon(Status::Held(lease.mode), &lease.owner, Variant::Holding);
             println!(
-                "  {} held by {} ({})",
+                "  {icon} {} held by {} ({})",
                 lease.resource,
-                lease.owner,
+                ctx.theme.owner(&lease.owner, Variant::Holding),
                 lease.mode.as_str()
             );
         }
@@ -501,14 +603,19 @@ fn cmd_queue(ctx: &Ctx, resource: &str) -> Result<(), String> {
         return Ok(());
     }
     if queue.is_empty() {
-        println!("Queue for {resource} is empty");
+        let icon = ctx.theme.status_icon(Status::Free);
+        println!("{icon} Queue for {resource} is empty");
     } else {
-        println!("Queue for {resource}:");
+        let icon = ctx.theme.icon(Status::Queued);
+        println!("{icon} Queue for {resource}:");
         for (i, entry) in queue.iter().enumerate() {
+            let entry_icon =
+                ctx.theme
+                    .owned_icon(Status::Queued, &entry.owner, Variant::Attempting);
             println!(
-                "  {}. {} ({}, {:?} priority, waiting since {} UTC)",
+                "  {}. {entry_icon} {} ({}, {:?} priority, waiting since {} UTC)",
                 i + 1,
-                entry.owner,
+                ctx.theme.owner(&entry.owner, Variant::Attempting),
                 entry.mode.as_str(),
                 entry.priority,
                 fmt_hms(entry.requested_at)
@@ -526,7 +633,13 @@ fn cmd_transfer(ctx: &Ctx, resource: &str, to: &str) -> Result<(), String> {
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&lease).unwrap());
     } else {
-        println!("Transferred {resource}: {} -> {}", ctx.owner, to);
+        let icon = ctx.theme.status_icon(Status::Held(lease.mode));
+        println!(
+            "{icon} {} {resource}: {} -> {}",
+            ctx.theme.good("Transferred"),
+            ctx.theme.owner(&ctx.owner, Variant::Attempting),
+            ctx.theme.owner(to, Variant::Holding)
+        );
     }
     Ok(())
 }
@@ -543,8 +656,9 @@ fn cmd_steal(ctx: &Ctx, resource: &str, reason: Option<&str>) -> Result<(), Stri
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&lease).unwrap());
     } else {
-        println!("Stole {resource}");
-        print_lease(&lease);
+        let icon = ctx.theme.status_icon(Status::Stolen);
+        println!("{icon} Stole {resource}");
+        print_lease(&ctx.theme, &lease);
     }
     Ok(())
 }
@@ -557,7 +671,10 @@ fn cmd_promote(ctx: &Ctx, resource: &str, mode: Option<&str>) -> Result<(), Stri
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&lease).unwrap());
     } else {
-        println!("Promoted {resource} to {}", lease.mode.as_str());
+        let icon = ctx
+            .theme
+            .owned_icon(Status::Promoted, &lease.owner, Variant::Holding);
+        println!("{icon} Promoted {resource} to {}", lease.mode.as_str());
     }
     Ok(())
 }
@@ -570,7 +687,10 @@ fn cmd_downgrade(ctx: &Ctx, resource: &str, mode: Option<&str>) -> Result<(), St
     if ctx.json {
         println!("{}", serde_json::to_string_pretty(&resp).unwrap());
     } else {
-        println!("Downgraded {resource}");
+        let icon = ctx
+            .theme
+            .owned_icon(Status::Downgraded, &ctx.owner, Variant::Holding);
+        println!("{icon} Downgraded {resource}");
     }
     Ok(())
 }
@@ -582,14 +702,21 @@ fn cmd_leases(ctx: &Ctx) -> Result<(), String> {
         return Ok(());
     }
     if leases.is_empty() {
-        println!("No active leases");
+        println!("{} No active leases", ctx.theme.status_icon(Status::Free));
     } else {
-        println!("{:<40} {:<20} {:<10} EXPIRES", "RESOURCE", "OWNER", "MODE");
+        println!(
+            "   {:<40} {:<20} {:<10} EXPIRES",
+            "RESOURCE", "OWNER", "MODE"
+        );
         for lease in &leases {
+            let icon =
+                ctx.theme
+                    .owned_icon(Status::Held(lease.mode), &lease.owner, Variant::Holding);
+            let owner = ctx.theme.owner(&lease.owner, Variant::Holding);
             println!(
-                "{:<40} {:<20} {:<10} {} ({})",
+                "{icon} {:<40} {:<20} {:<10} {} ({})",
                 lease.resource,
-                lease.owner,
+                owner,
                 lease.mode.as_str(),
                 fmt_hms(lease.expires_at),
                 fmt_relative(lease.expires_at),
@@ -606,13 +733,14 @@ fn cmd_events(ctx: &Ctx, limit: usize) -> Result<(), String> {
         return Ok(());
     }
     for event in &events {
+        let owner = ctx.theme.owner(&event.owner, Variant::Holding);
         println!(
             "#{:>5} {}  {:?}  {}  {}",
             event.seq,
             fmt_hms(event.ts),
             event.kind,
             event.resource,
-            event.owner
+            owner
         );
     }
     Ok(())
@@ -629,11 +757,12 @@ fn cmd_audit(ctx: &Ctx, limit: usize) -> Result<(), String> {
             .duration_ms
             .map(|d| format!(" ({}ms)", d))
             .unwrap_or_default();
+        let owner = ctx.theme.owner(&record.owner, Variant::Holding);
         println!(
             "{}  {:<10} {:<20} {}{}",
             fmt_hms(record.ts),
             record.action,
-            record.owner,
+            owner,
             record.resource,
             duration
         );
@@ -647,7 +776,12 @@ fn cmd_metrics(ctx: &Ctx) -> Result<(), String> {
         println!("{}", serde_json::to_string_pretty(&snapshot).unwrap());
         return Ok(());
     }
-    println!("Active leases:    {}", snapshot.active_leases);
+    let lock_icon = if snapshot.active_leases > 0 {
+        ctx.theme.icon(Status::Held(LockMode::Exclusive))
+    } else {
+        ctx.theme.icon(Status::Free)
+    };
+    println!("{lock_icon} Active leases:    {}", snapshot.active_leases);
     println!("Queue depth:      {}", snapshot.queue_depth);
     println!("Acquires:         {}", snapshot.acquires);
     println!("Grants:           {}", snapshot.grants);
@@ -662,6 +796,78 @@ fn cmd_metrics(ctx: &Ctx) -> Result<(), String> {
     println!("Queue promotions: {}", snapshot.queue_promotions);
     println!("Audit pruned:     {}", snapshot.audit_pruned);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Trust: local sealing of secrets at rest (no daemon required)
+// ---------------------------------------------------------------------------
+
+fn run_trust_command(theme: &Theme, command: TrustCommand) -> Result<(), String> {
+    match command {
+        TrustCommand::SealKeys {
+            input,
+            output,
+            trust_key,
+        } => {
+            let plaintext = std::fs::read(&input)
+                .map_err(|e| format!("cannot read {}: {e}", input.display()))?;
+            // Validate it parses as an api keys file before sealing garbage.
+            serde_json::from_slice::<serde_json::Value>(&plaintext)
+                .map_err(|e| format!("{} is not valid JSON: {e}", input.display()))?;
+            let provider = SoftwareProvider::open_or_create(&trust_key)
+                .map_err(|e| format!("cannot open trust key {}: {e}", trust_key.display()))?;
+            locksmith_core::seal_to_file(&provider, &plaintext, &output)
+                .map_err(|e| format!("cannot write sealed file {}: {e}", output.display()))?;
+            let icon = theme.status_icon(Status::Sealed);
+            println!(
+                "{icon} sealed {} -> {} (trust key: {})",
+                input.display(),
+                output.display(),
+                trust_key.display()
+            );
+            Ok(())
+        }
+        TrustCommand::UnsealKeys {
+            input,
+            output,
+            trust_key,
+        } => {
+            let provider = SoftwareProvider::open_or_create(&trust_key)
+                .map_err(|e| format!("cannot open trust key {}: {e}", trust_key.display()))?;
+            let plaintext = locksmith_core::unseal_from_file(&provider, &input)
+                .map_err(|e| format!("cannot unseal {}: {e}", input.display()))?;
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, &plaintext)
+                        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                    let icon = theme.status_icon(Status::Unsealed);
+                    println!("{icon} unsealed {} -> {}", input.display(), path.display());
+                }
+                None => {
+                    use std::io::Write;
+                    std::io::stdout()
+                        .write_all(&plaintext)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        }
+        TrustCommand::Status => {
+            let tpm = locksmith_core::tpm2_present();
+            let icon = theme.icon(Status::Sealed);
+            println!("{icon} security_mode: software");
+            println!("  hardware_backed: false");
+            println!(
+                "  tpm2_device: {}",
+                if tpm {
+                    "present (unused: no hardware backend yet)"
+                } else {
+                    "not detected"
+                }
+            );
+            Ok(())
+        }
+    }
 }
 
 fn main() {
@@ -679,10 +885,15 @@ fn main() {
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "anonymous".to_string());
     let server = cli.server.trim_end_matches('/').to_string();
+    let theme = Theme::new(if cli.json {
+        RenderMode::Plain
+    } else {
+        RenderMode::detect()
+    });
     let client = match http::Client::new(&server, Duration::from_secs(30)) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("{}", theme.alert(&format!("error: {e}")));
             std::process::exit(2);
         }
     };
@@ -693,6 +904,7 @@ fn main() {
         owner_explicit,
         api_key: cli.api_key,
         json: cli.json,
+        theme,
     };
 
     let result = match cli.command {
@@ -731,10 +943,11 @@ fn main() {
         Command::Events { limit } => cmd_events(&ctx, limit),
         Command::Audit { limit } => cmd_audit(&ctx, limit),
         Command::Metrics => cmd_metrics(&ctx),
+        Command::Trust { command } => run_trust_command(&ctx.theme, command),
     };
 
     if let Err(e) = result {
-        eprintln!("error: {e}");
+        eprintln!("{}", ctx.theme.alert(&format!("error: {e}")));
         std::process::exit(1);
     }
 }

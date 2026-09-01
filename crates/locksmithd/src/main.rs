@@ -4,7 +4,6 @@
 //! and serves Prometheus metrics.
 mod curly_expand;
 
-
 mod auth;
 
 use std::net::SocketAddr;
@@ -45,6 +44,16 @@ struct Args {
     /// JSON file with API keys (see README for the schema).
     #[arg(long, env = "LOCKSMITH_API_KEYS")]
     api_keys: Option<PathBuf>,
+
+    /// API keys file sealed with `locksmith trust seal-keys`. Mutually
+    /// exclusive with --api-keys.
+    #[arg(long, env = "LOCKSMITH_API_KEYS_SEALED")]
+    api_keys_sealed: Option<PathBuf>,
+
+    /// Trust provider key file, used to unseal --api-keys-sealed
+    /// (default: <db>.trust.key).
+    #[arg(long, env = "LOCKSMITH_TRUST_KEY")]
+    trust_key: Option<PathBuf>,
 
     /// Reject unauthenticated requests.
     #[arg(long, env = "LOCKSMITH_NO_ANONYMOUS")]
@@ -577,7 +586,17 @@ async fn __curly_original_main() {
         }
     };
 
-    let auth = match AuthConfig::load(args.api_keys.as_deref(), !args.no_anonymous) {
+    let trust_key = args.trust_key.clone().unwrap_or_else(|| {
+        let mut p = args.db.clone().into_os_string();
+        p.push(".trust.key");
+        PathBuf::from(p)
+    });
+    let auth = match AuthConfig::load(
+        args.api_keys.as_deref(),
+        args.api_keys_sealed.as_deref(),
+        &trust_key,
+        !args.no_anonymous,
+    ) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("{e}");
@@ -684,6 +703,14 @@ async fn __curly_original_main() {
         args.db.display(),
         args.policy,
     );
+    if args.api_keys_sealed.is_some() {
+        let tpm_note = if locksmith_core::tpm2_present() {
+            " (TPM2 device detected but no hardware backend exists yet; api keys sealed with software trust key)"
+        } else {
+            ""
+        };
+        eprintln!("trust: security_mode=software{tpm_note}");
+    }
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("server error: {e}");

@@ -84,6 +84,7 @@ locksmith steal <resource> [--reason ...]
 locksmith promote <resource> [-m mode]
 locksmith downgrade <resource> [-m mode]
 locksmith leases | events | audit | metrics
+locksmith trust seal-keys | unseal-keys | status
 ```
 
 Global flags: `--server` (or `LOCKSMITH_SERVER`), `--owner` (or
@@ -92,6 +93,23 @@ Global flags: `--server` (or `LOCKSMITH_SERVER`), `--owner` (or
 
 `acquire --wait` blocks in the queue and returns when the lease is granted
 (`--wait-timeout` bounds the wait, default 300s).
+
+### Themed output
+
+Non-`--json` output is lock-themed: an icon compresses a target's state to
+one glyph (🔒 exclusive, 🔑 shared, 🗝️ intent, 🔓 free, ⏳ queued, ⚡ stolen),
+and every owner name gets a color that's a pure hash of the owner string —
+the same owner is always the same color, in every command, with no shared
+state to keep in sync. The color's *weight* carries the second signal:
+bold means holding, dim means queued/attempting, so "who" and "how" read
+independently. `acquire --wait` animates the wait as a spinner cycling
+through closing-lock frames on a self-overwriting line.
+
+Rendering picks one of three forms at startup and never mixes them:
+Rich (emoji + 256-color ANSI, real unicode terminal), Ascii (bracketed
+icons + ANSI color, color terminal without a UTF-8 locale), or Plain
+(bracketed icons, no ANSI — `NO_COLOR`, or stdout isn't a terminal, e.g.
+piped/redirected/CI). `--json` always bypasses styling entirely.
 
 ## Lock modes and hierarchy
 
@@ -179,6 +197,25 @@ A key binds its owner: callers cannot act as another owner unless they hold
 `read`, `write`, `admin` (admin bypasses all checks; `steal` is never granted
 by default).
 
+### Sealing the API keys file at rest
+
+`--api-keys` stores keys as plaintext JSON. To seal them instead, encrypted
+with a locally-persisted trust key (AES-256-GCM):
+
+```bash
+locksmith trust seal-keys --input keys.json --output keys.sealed.json --trust-key locksmith.trust.key
+locksmithd --api-keys-sealed keys.sealed.json --trust-key locksmith.trust.key --no-anonymous
+```
+
+`--api-keys` and `--api-keys-sealed` are mutually exclusive. `locksmith
+trust status` reports the active trust backend; `locksmith trust
+unseal-keys` reverses the seal for inspection or migration. Today there is
+only one backend, `security_mode: software` — the trust key is an ordinary
+file, so this protects against a stray copy of the keys file, not against a
+full compromise of the host. TPM2 device detection exists
+(`locksmith_core::trust::tpm2_present`) for future hardware-backed sealing,
+but no TPM2 backend is implemented yet.
+
 ## Persistence and crash recovery
 
 State lives in SQLite (default `./locksmith.db`, `--db` / `LOCKSMITH_DB`),
@@ -247,6 +284,8 @@ The directive describes a broad end-state. Deliberately deferred:
 
 - gRPC and Unix-socket transports (REST over loopback TCP today)
 - JWT / mTLS / OIDC auth providers (API keys + anonymous today)
+- TPM2-backed sealing (device detection exists; keys are sealed with a
+  software trust key today — see `## Sealing the API keys file at rest`)
 - Dynamic plugin system for custom schedulers
 - Session-bound and ephemeral lock types (the `sessions` table exists)
 - LSP extension for editors
@@ -254,7 +293,7 @@ The directive describes a broad end-state. Deliberately deferred:
 ## Development
 
 ```bash
-cargo test --workspace    # 38 tests: manager semantics, fencing, hierarchy, recovery
+cargo test --workspace    # 48 tests: manager semantics, fencing, hierarchy, recovery, trust sealing, CLI theming
 cargo build --release
 ```
 

@@ -19,6 +19,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
+aes-gcm = "0.10"
+base64 = "0.22"
 # reqwest intentionally absent: locksmith-cli uses a std-based HTTP client (src/http.rs)
 
 [profile.release]

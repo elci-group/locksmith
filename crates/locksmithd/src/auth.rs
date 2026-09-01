@@ -5,12 +5,21 @@
 //!   standard capability set, no identity required.
 //! * **API keys**: a JSON file maps bearer tokens to owners and
 //!   capabilities. `--no-anonymous` rejects unauthenticated requests.
+//!
+//! The API key file can be stored either as plaintext JSON (`--api-keys`)
+//! or sealed at rest (`--api-keys-sealed`, see `locksmith trust seal-keys`).
+//! A sealed file is unsealed once at startup using a `TrustProvider` keyed
+//! by `--trust-key`; the decrypted keys never touch disk. See
+//! `locksmith_core::trust` for what "sealed" does and doesn't protect
+//! against with today's software-only backend.
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
+
+use locksmith_core::SoftwareProvider;
 
 use crate::AppState;
 
@@ -62,23 +71,39 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
-    pub fn load(path: Option<&std::path::Path>, allow_anonymous: bool) -> Result<Self, String> {
-        match path {
-            None => Ok(AuthConfig {
-                keys: Vec::new(),
-                allow_anonymous,
-            }),
-            Some(p) => {
-                let text = std::fs::read_to_string(p)
-                    .map_err(|e| format!("cannot read api keys file {}: {e}", p.display()))?;
-                let file: AuthConfigFile = serde_json::from_str(&text)
-                    .map_err(|e| format!("invalid api keys file {}: {e}", p.display()))?;
-                Ok(AuthConfig {
-                    keys: file.keys,
-                    allow_anonymous,
-                })
-            }
+    /// Load API keys from at most one of a plaintext (`path`) or sealed
+    /// (`sealed_path`) file. `trust_key_path` locates the software trust
+    /// provider's key, used only when `sealed_path` is set.
+    pub fn load(
+        path: Option<&std::path::Path>,
+        sealed_path: Option<&std::path::Path>,
+        trust_key_path: &std::path::Path,
+        allow_anonymous: bool,
+    ) -> Result<Self, String> {
+        if path.is_some() && sealed_path.is_some() {
+            return Err("--api-keys and --api-keys-sealed are mutually exclusive".into());
         }
+        let keys = if let Some(p) = sealed_path {
+            let provider = SoftwareProvider::open_or_create(trust_key_path)
+                .map_err(|e| format!("cannot open trust key {}: {e}", trust_key_path.display()))?;
+            let bytes = locksmith_core::unseal_from_file(&provider, p)
+                .map_err(|e| format!("cannot unseal api keys file {}: {e}", p.display()))?;
+            let file: AuthConfigFile = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("invalid sealed api keys file {}: {e}", p.display()))?;
+            file.keys
+        } else if let Some(p) = path {
+            let text = std::fs::read_to_string(p)
+                .map_err(|e| format!("cannot read api keys file {}: {e}", p.display()))?;
+            let file: AuthConfigFile = serde_json::from_str(&text)
+                .map_err(|e| format!("invalid api keys file {}: {e}", p.display()))?;
+            file.keys
+        } else {
+            Vec::new()
+        };
+        Ok(AuthConfig {
+            keys,
+            allow_anonymous,
+        })
     }
 
     fn authenticate(&self, headers: &HeaderMap) -> Option<(String, Vec<Capability>)> {

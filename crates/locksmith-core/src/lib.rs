@@ -17,6 +17,7 @@ pub mod hierarchy;
 pub mod manager;
 pub mod scheduler;
 pub mod store;
+pub mod trust;
 pub mod types;
 
 pub use audit::AuditRecord;
@@ -27,6 +28,10 @@ pub use manager::{
 };
 pub use scheduler::QueuePolicy;
 pub use store::{InMemoryStore, Snapshot, SqliteStore, Store};
+pub use trust::{
+    seal_to_file, tpm2_present, unseal_from_file, SealedBlob, SealedFile, SecurityMode,
+    SoftwareProvider, TrustCapabilities, TrustError, TrustProvider,
+};
 pub use types::{
     now_ms, Config, Lease, LeaseCapability, LeaseId, LockMode, OwnerId, Priority, QueueEntry,
     QueueEntryId, ResourceId, TimestampMs,
