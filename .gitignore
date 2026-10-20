@@ -6,3 +6,10 @@
 .kaptaind/
 amber_proposals/
 .amber/
+.azusa/
+.lwoodz/
+.uni/
+.traci/
+.orb
+*.log
+.env

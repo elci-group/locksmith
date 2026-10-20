@@ -1,0 +1,62 @@
+# lwoodz configuration — licensing daemon for locksmith
+# Lwoodz is to software licensing what Kaptaind is to version management.
+# Copy this file to lwoodz.toml in your repo root and adjust values.
+
+[project]
+# SPDX identifier for the project. See https://spdx.org/licenses/
+license = "MIT"
+copyright_holder = "sal"
+copyright_year = 2026
+project_name = "locksmith"
+# copyright_holder_email = "you@example.com"
+# project_url = "https://github.com/elci-group/locksmith"
+# dual_license = "Apache-2.0"          # second license for dual-licensing
+# commercial_license = "SEE LICENSE IN Commercial-LICENSE"
+
+[operation]
+# observe = report only, enforce = generate/update files
+mode = "observe"
+
+[watch]
+path = "."
+recursive = true
+ignore_file = ".lwoodignore"
+
+[generate]
+license_file = "LICENSE"
+notice_file = "NOTICE"
+copyright_file = "COPYRIGHT"
+attribution_file = "THIRD_PARTY_NOTICES"
+# When false, existing files are left untouched. When true, files are overwritten.
+overwrite = true
+
+[headers]
+enabled = true
+insert_spdx = true
+exclude = ["target/**", "node_modules/**", "dist/**", ".git/**", ".lwoodz/**", "vendor/**"]
+# include = ["src/**"]
+
+[compatibility]
+enforce = true
+policy = "permissive"  # permissive | copyleft-allowed | strict
+
+[daemon]
+startup_guard = false
+shutdown_grace_secs = 10
+
+[inference]
+enabled = true
+provider = "groq"
+model = "auto"
+groq_model = "llama-3.3-70b-versatile"
+# api_key_env = "GROQ_API_KEY"  # env var holding the Groq API key
+
+[spdx]
+produce_manifest = true
+manifest_path = ".lwoodz/manifest.json"
+include_transitive = false
+
+[audit]
+enabled = true
+log_path = ".lwoodz/audit.jsonl"
+fail_on_incompatible = false

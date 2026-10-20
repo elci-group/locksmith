@@ -1,0 +1,45 @@
+[analysis]
+fail_on = "error"
+trace_window = 6
+production_only = false
+require_correlation_id = true
+correlation_fields = ["correlation_id", "request_id", "trace_id"]
+ignore = ["target", ".git", ".kaptaind", ".traci"]
+enabled_rules = ["TRC001", "TRC002", "TRC003", "TRC004", "TRC005", "TRC006", "TRC007", "TRC008"]
+
+[watch]
+interval_ms = 750
+
+[daemon]
+state_dir = ".traci"
+
+[notifications]
+enabled = true
+console = true
+min_severity = "error"
+command = ""
+webhook_url = ""
+cooldown_seconds = 30
+
+[ui]
+color = "auto"
+emoji = true
+animate = true
+
+[trace]
+provider = "command"
+provider_command = ""
+low_model = "fast"
+medium_model = "balanced"
+high_model = "deep"
+medium_threshold = 35
+high_threshold = 70
+branch_prefix = "traci/trace"
+benchmark_command = "cargo test --all-targets"
+benchmark_runs = 3
+max_regression_percent = 10
+max_complexity_increase = 0
+max_diagnostic_increase = 0
+max_context_bytes = 120000
+max_patch_bytes = 250000
+require_clean = true
