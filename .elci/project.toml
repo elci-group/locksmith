@@ -1,0 +1,32 @@
+# ELCI project manifest — ELCI-RGCA-001 §5
+# Provisional (Phase 1 machine draft). Human review required for Tier-S/A.
+schema_version = "1.0"
+
+[project]
+id = "locksmith"
+name = "locksmith"
+descriptor = "Deterministic workspace locking and coordination engine for concurrent human and agent work: any resource (file, directory, GPU, task, agent) is claimed with expiring leases, heartbeats and priority queues, with transfer, steal and promote operations, SQLite persistence, an audit log, an event bus and a REST daemon."
+status = "active"
+maturity = "beta"
+class = "support"
+
+[ownership]
+organisation = "elci-group"
+maintainer = "ELCI Group"
+
+[architecture]
+independent_boundary = true
+boundary_reason = "Provisional Phase 1 classification (tier A); pending §17 rationalisation review."
+parent = []
+capabilities = []
+consumers = []
+
+[authority]
+human_write_authority = true
+agent_write_authority = false
+autonomous_operation = false
+
+[lifecycle]
+introduced = "2026"
+supersedes = []
+superseded_by = []
